@@ -39,6 +39,18 @@ class PersonRepository:
             Person.is_deleted == False,  # noqa: E712
         )
 
+    async def get_by_email(self, email: str) -> Person | None:
+        """Fallback person-resolution for a direct-Calendly booking's inbound webhook, when the
+        invitee has no usable phone (text_reminder_number) to resolve via get_or_create_by_phone —
+        e.g. the doctor's invite link didn't ask for one. Exact, case-insensitive match; deliberately
+        NOT used for Calendly webhook *correlation* (that's always by invitee/event URI, never
+        email — see calendly_sync_service.py — since many patients share the placeholder email).
+        """
+        return await Person.find_one(
+            {"email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}},
+            Person.is_deleted == False,  # noqa: E712
+        )
+
     async def apply_name_if_given(self, person: Person, full_name: str | None) -> Person:
         """Update-if-different name logic, factored out so any path that already has a resolved
         Person (not just get_or_create_by_phone below) — e.g. agent_tools.py's

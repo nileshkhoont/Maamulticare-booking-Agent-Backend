@@ -43,6 +43,11 @@ def _to_out(appointment: Appointment, person: Person | None = None) -> Appointme
         created_by_call_id=appointment.created_by_call_id,
         created_at=appointment.created_at,
         updated_at=appointment.updated_at,
+        scheduling_method=appointment.scheduling_method,
+        calendly_sync_status=appointment.calendly_sync_status,
+        calendly_sync_error=appointment.calendly_sync_error,
+        calendly_last_synced_at=appointment.calendly_last_synced_at,
+        is_placeholder_email=appointment.is_placeholder_email,
     )
 
 

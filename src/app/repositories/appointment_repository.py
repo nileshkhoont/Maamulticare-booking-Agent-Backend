@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 from beanie import PydanticObjectId
 
-from app.core.constants import AppointmentStatus
+from app.core.constants import AppointmentStatus, CalendlySchedulingMethod, CalendlySyncStatus
 from app.models.appointment import Appointment
 from app.schemas.common import PageParams
 
@@ -118,6 +118,44 @@ class AppointmentRepository:
             .to_list()
         )
         return items, total
+
+    async def get_pending_api_push_at(self, appointment_datetime: datetime) -> Appointment | None:
+        """The race-guard half of calendly_sync_service's loop-prevention rule: a webhook can
+        arrive for an appointment our own app just pushed BEFORE that push's own response has
+        been written back onto the local row (calendly_invitee_uri still None). Finds the
+        api-scheduling-method row waiting on exactly that slot so the webhook handler can self-heal
+        it (write the URI it already has) instead of creating a duplicate Appointment. Deliberately
+        narrow — scheduling_method alone would never be a safe filter on its own, since many rows
+        share it; the exact datetime match is what makes this unambiguous.
+        """
+        return await Appointment.find_one(
+            Appointment.appointment_datetime == appointment_datetime,
+            Appointment.scheduling_method == CalendlySchedulingMethod.api,
+            Appointment.calendly_invitee_uri == None,  # noqa: E711
+            {"calendly_sync_status": {"$in": ["pending", "syncing"]}},
+            Appointment.is_deleted == False,  # noqa: E712
+        )
+
+    async def list_pending_calendly_sync(self) -> list[Appointment]:
+        """Feeds workers/tasks/calendly_push_task.py's sweep — every Appointment still owed a
+        push (or a cancellation push) to Calendly.
+        """
+        return await Appointment.find(
+            Appointment.calendly_sync_status == CalendlySyncStatus.pending,
+            Appointment.is_deleted == False,  # noqa: E712
+        ).to_list()
+
+    async def get_by_calendly_invitee_uri(self, calendly_invitee_uri: str) -> Appointment | None:
+        """Correlates an inbound Calendly webhook (invitee.uri) back to the local Appointment it
+        belongs to — mirrors call_repository.get_by_edesy_call_id / call_schedule_repository.
+        get_by_edesy_call_id exactly (plain find_one equality match). This is the "invitee URI
+        already in DB" half of calendly_sync_service's loop-prevention rule: when it returns a
+        match, the webhook is just confirming something already recorded, not a new event.
+        """
+        return await Appointment.find_one(
+            Appointment.calendly_invitee_uri == calendly_invitee_uri,
+            Appointment.is_deleted == False,  # noqa: E712
+        )
 
     async def list_booked_for_scheduling(self, person_id: str | None = None) -> list[Appointment]:
         """Feeds the admin's schedule-call form's "pick from already booked appointments" list

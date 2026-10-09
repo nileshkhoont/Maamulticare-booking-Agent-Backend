@@ -1,9 +1,15 @@
 from fastapi import APIRouter, HTTPException, Request, status
 
 from app.core.logging import get_logger
-from app.core.webhook_security import verify_edesy_signature, verify_static_header_secret
+from app.core.webhook_security import (
+    verify_calendly_signature,
+    verify_edesy_signature,
+    verify_static_header_secret,
+)
+from app.integrations.calendly.webhook_events import parse_webhook_event as parse_calendly_webhook_event
 from app.integrations.edesy.webhook_events import parse_webhook_event
 from app.schemas.common import Message
+from app.services.calendly_sync_service import calendly_sync_service
 from app.services.call_service import call_service
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
@@ -49,4 +55,36 @@ async def edesy_webhook(request: Request) -> Message:
         return Message(detail="ok")
 
     await call_service.handle_call_ended(event)
+    return Message(detail="ok")
+
+
+@router.post("/calendly", response_model=Message)
+async def calendly_webhook(request: Request) -> Message:
+    """Receives Calendly's webhook deliveries (`invitee.created`, `invitee.canceled` — see
+    integrations/calendly/webhook_events.py). Requires the account to be on a paid Standard+ plan
+    and scripts/setup_calendly_webhook.py to have been run — until then this route simply 401s
+    everything, since CALENDLY_WEBHOOK_SIGNING_KEY is unset.
+
+    Same "always 200 unless unauthorized" convention as /webhooks/edesy: a malformed/unrecognized
+    payload is logged and accepted, not treated as a delivery failure, so Calendly never backs off
+    or disables the subscription over an unexpected shape on our end.
+    """
+    raw_body = await request.body()
+
+    if not verify_calendly_signature(raw_body, request.headers.get("Calendly-Webhook-Signature")):
+        logger.warning("calendly_webhook_unauthorized")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook signature")
+
+    try:
+        payload = await request.json()
+    except ValueError:
+        logger.warning("calendly_webhook_invalid_json", body=raw_body[:2000])
+        return Message(detail="ok")
+
+    event = parse_calendly_webhook_event(payload)
+    if event is None:
+        # Already logged (with the full payload) inside parse_webhook_event.
+        return Message(detail="ok")
+
+    await calendly_sync_service.handle_webhook_event(event)
     return Message(detail="ok")
