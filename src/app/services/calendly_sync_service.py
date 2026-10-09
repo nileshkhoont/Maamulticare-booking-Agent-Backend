@@ -35,6 +35,7 @@ from app.integrations.calendly.schemas import (
     CalendlyCreateInviteeRequest,
     CalendlyInviteeInput,
     CalendlyLocationInput,
+    CalendlyQuestionAndAnswer,
 )
 from app.integrations.calendly.webhook_events import CalendlyWebhookEvent, CalendlyWebhookInviteePayload
 from app.models.appointment import Appointment
@@ -107,10 +108,43 @@ class CalendlySyncService:
             else:
                 await self._push_booking(appointment)
         except CalendlyIntegrationError as exc:
-            appointment.calendly_sync_status = CalendlySyncStatus.failed
-            appointment.calendly_sync_error = str(exc)
+            if "already_filled" in exc.error_codes:
+                # Permanent, specific to THIS appointment's exact requested time — Calendly
+                # itself already has something at that slot and retrying will hit the identical
+                # conflict every time. Distinct from every other failure (incl. config mistakes
+                # like invalid_location_choice, which self-heal once fixed): the reconciliation
+                # sweep's _unstick_failed_or_stuck() only resets "failed" rows, so this status
+                # is never auto-retried — a human has to notice and rebook at a different time.
+                appointment.calendly_sync_status = CalendlySyncStatus.permanently_failed
+            else:
+                appointment.calendly_sync_status = CalendlySyncStatus.failed
+            # "Required Questions and Answers cannot be blank" has no structured error code (no
+            # "details" array at all in Calendly's response, unlike already_filled/invalid_
+            # location_choice) — only this exact substring to key off. This is a systemic config
+            # mismatch (a required custom question added on the Event Type with no matching
+            # CALENDLY_EVENT_PHONE_QUESTION answer, or the two no longer matching byte-for-byte),
+            # not specific to one appointment, so it stays "failed"/auto-retried, not
+            # "permanently_failed" — fixing the config should let every blocked row succeed again.
+            # The enrichment below just makes the real cause obvious from calendly_sync_error
+            # alone, rather than requiring a trip through the worker logs to diagnose again.
+            error_message = str(exc)
+            if "Questions and Answers cannot be blank" in error_message:
+                error_message = (
+                    f"{error_message} — likely cause: the Calendly Event Type has a REQUIRED "
+                    "custom question with no answer supplied. Check that "
+                    "CALENDLY_EVENT_PHONE_QUESTION / CALENDLY_EVENT_PHONE_QUESTION_POSITION in "
+                    ".env exactly match that Event Type's own custom_questions[].name/.position "
+                    "(GET /event_types/<id>), or that a newly added required question also has "
+                    "handling added here."
+                )
+            appointment.calendly_sync_error = error_message
             await appointment.save()
-            logger.error("calendly_push_failed", appointment_id=str(appointment.id), error=str(exc))
+            logger.error(
+                "calendly_push_failed",
+                appointment_id=str(appointment.id),
+                error=error_message,
+                permanent=appointment.calendly_sync_status == CalendlySyncStatus.permanently_failed,
+            )
 
     async def _push_cancellation(self, appointment: Appointment) -> None:
         if appointment.calendly_event_uri is None:
@@ -155,12 +189,27 @@ class CalendlySyncService:
                 location=settings.calendly_event_location_text,
             )
 
+        questions_and_answers = None
+        if settings.calendly_event_phone_question:
+            # Answers the Event Type's own REQUIRED phone-number question with the same value
+            # already sent via text_reminder_number — see CALENDLY_EVENT_PHONE_QUESTION's config
+            # comment for why this is unconditionally required by Calendly whenever the Event
+            # Type has any required custom question with no matching answer supplied.
+            questions_and_answers = [
+                CalendlyQuestionAndAnswer(
+                    question=settings.calendly_event_phone_question,
+                    answer=person.phone_number,
+                    position=settings.calendly_event_phone_question_position,
+                )
+            ]
+
         response = await calendly_client.create_invitee(
             CalendlyCreateInviteeRequest(
                 event_type=settings.calendly_event_type_uri,
                 start_time=ensure_utc(appointment.appointment_datetime).isoformat(),
                 invitee=invitee_input,
                 location=location,
+                questions_and_answers=questions_and_answers,
             )
         )
         appointment.calendly_invitee_uri = response.resource.uri
@@ -201,6 +250,15 @@ class CalendlySyncService:
             return await person_repository.get_or_create_by_phone(
                 payload.text_reminder_number, full_name=payload.name
             )
+        # Fallback: a direct-Calendly booking's phone is often only collected via a custom
+        # question (CALENDLY_EVENT_PHONE_QUESTION), not Calendly's native SMS-reminder field —
+        # only that native field populates text_reminder_number above. Confirmed live 2026-10-09
+        # that questions_and_answers[].question is an exact match of the Event Type's own
+        # custom_questions[].name, same byte-for-byte requirement as the outbound push side.
+        if settings.calendly_event_phone_question and payload.questions_and_answers:
+            for qa in payload.questions_and_answers:
+                if qa.question == settings.calendly_event_phone_question and qa.answer:
+                    return await person_repository.get_or_create_by_phone(qa.answer, full_name=payload.name)
         if payload.email:
             person = await person_repository.get_by_email(payload.email)
             if person is not None:
@@ -208,9 +266,9 @@ class CalendlySyncService:
         logger.warning(
             "calendly_webhook_unresolvable_person",
             invitee_uri=payload.uri,
-            note="No usable phone (text_reminder_number) and no matching email — cannot resolve "
-            "a Person for this Calendly-direct booking. Add a phone question to the Calendly "
-            "Event Type to close this gap.",
+            note="No usable phone (neither text_reminder_number nor the configured custom "
+            "question answer) and no matching email — cannot resolve a Person for this "
+            "Calendly-direct booking.",
         )
         return None
 
@@ -225,6 +283,20 @@ class CalendlySyncService:
 
         event_uuid = _event_uuid_from_uri(payload.event)
         event_response = await calendly_client.get_scheduled_event(event_uuid)
+
+        # A user-scoped webhook subscription fires for every Event Type that user owns, not just
+        # this integration's one — confirmed against Calendly's own webhook-subscriptions API spec,
+        # there's no event_type filter available at subscription-creation time either. Mirrors the
+        # same client-side filter workers/tasks/calendly_reconciliation_task.py applies to its own
+        # polled events, just applied per-delivery here instead of to a batch.
+        if event_response.resource.event_type != settings.calendly_event_type_uri:
+            logger.info(
+                "calendly_webhook_other_event_type_ignored",
+                invitee_uri=payload.uri,
+                event_type=event_response.resource.event_type,
+            )
+            return
+
         start_time = _parse_calendly_datetime(event_response.resource.start_time)
         end_time = _parse_calendly_datetime(event_response.resource.end_time)
 

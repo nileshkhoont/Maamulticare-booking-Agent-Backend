@@ -46,6 +46,11 @@ class CalendlySyncStatus(str, Enum):
     synced = "synced"  # local state matches Calendly
     failed = "failed"  # last push attempt errored — see Appointment.calendly_sync_error
     not_applicable = "not_applicable"  # nothing to push (e.g. cancelled before ever reaching Calendly)
+    permanently_failed = "permanently_failed"  # Calendly rejected this exact slot ("already_filled")
+    # — never auto-retried by the reconciliation sweep, unlike "failed", since retrying it would
+    # just hit the same real conflict again. Unlike "failed", "pending", "syncing", or
+    # "not_applicable", this state is a deliberate dead end a human must resolve manually (e.g.
+    # rebook at a different time) — see calendly_sync_service.process_pending_appointment.
 
 
 class CallType(str, Enum):

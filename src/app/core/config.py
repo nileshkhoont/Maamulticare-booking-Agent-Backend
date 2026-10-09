@@ -97,6 +97,19 @@ class Settings(BaseSettings):
     # or a dial-in number for "phone_call". Not needed for "google_conference" (Calendly
     # auto-generates the meeting link). Ignored if calendly_event_location_kind is unset.
     calendly_event_location_text: str | None = None
+    # Exact, case-sensitive text of a REQUIRED custom question on CALENDLY_EVENT_TYPE_URI (e.g.
+    # a phone-number question added directly in the Calendly dashboard) — confirmed live 2026-10-09
+    # that Calendly's POST /invitees REJECTS the booking entirely ("Required Questions and Answers
+    # cannot be blank") if a required question has no matching answer in the request. Must match
+    # that Event Type's own custom_questions[].name byte-for-byte (fetch via GET /event_types/<id>
+    # to confirm, never guess/retype from the dashboard UI — whitespace/punctuation differences
+    # are rejected the same as the location-text mismatch was). Left unset, no questions_and_
+    # answers are sent at all — only correct if the Event Type has no required questions.
+    calendly_event_phone_question: str | None = None
+    # That same question's 0-indexed position among the Event Type's custom_questions — also from
+    # custom_questions[].position in that same GET /event_types/<id> response. Ignored if
+    # calendly_event_phone_question is unset.
+    calendly_event_phone_question_position: int = 0
     # HMAC-SHA256 key for verifying the `Calendly-Webhook-Signature` header on inbound deliveries
     # at /api/v1/webhooks/calendly — printed by scripts/setup_calendly_webhook.py when the webhook
     # subscription is created (a one-off, manually-run step, NOT automatic at startup — see that

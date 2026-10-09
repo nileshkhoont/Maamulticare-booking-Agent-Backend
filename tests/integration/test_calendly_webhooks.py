@@ -71,11 +71,17 @@ def _invitee_payload(
     }
 
 
-def _mock_scheduled_event(start_time: str, end_time: str):
+def _mock_scheduled_event(start_time: str, end_time: str, event_type: str | None = None):
+    # Defaults to this integration's own configured Event Type — every existing test exercises
+    # "this is our Event Type" behavior; pass a different URI explicitly to simulate the other
+    # Event Type this account also has (e.g. "OPD Consultation"), which must be ignored.
     return AsyncMock(
         return_value=CalendlyScheduledEventResponse(
             resource=CalendlyScheduledEventResource(
-                uri="https://api.calendly.com/scheduled_events/evt-1", start_time=start_time, end_time=end_time
+                uri="https://api.calendly.com/scheduled_events/evt-1",
+                event_type=event_type or settings.calendly_event_type_uri,
+                start_time=start_time,
+                end_time=end_time,
             )
         )
     )
@@ -202,6 +208,38 @@ async def test_webhook_creates_local_appointment_for_direct_calendly_booking(cli
 
     person = await Person.find_one(Person.phone_number == "+919876500003")
     assert person is not None
+
+
+@pytest.mark.asyncio
+async def test_webhook_ignores_invitee_created_for_other_event_type(client: AsyncClient):
+    """A user-scoped webhook subscription fires for every Event Type that account owns, not just
+    this integration's one (confirmed against Calendly's own webhook-subscriptions API spec — no
+    event_type filter exists there either). A delivery for a different Event Type (e.g. this
+    account's unrelated "OPD Consultation") must be silently ignored — no Appointment, no Person.
+    """
+    payload = _invitee_payload(
+        "invitee.created",
+        uri="https://api.calendly.com/scheduled_events/evt-opd/invitees/inv-opd",
+        event_uri="https://api.calendly.com/scheduled_events/evt-opd",
+        phone="+919876500099",
+        email="opdpatient@example.com",
+        name="OPD Patient",
+    )
+    mock_event = _mock_scheduled_event(
+        "2026-10-22T07:00:00.000000Z",
+        "2026-10-22T07:30:00.000000Z",
+        event_type="https://api.calendly.com/event_types/OPD000000000AAAA",
+    )
+    with patch("app.services.calendly_sync_service.calendly_client.get_scheduled_event", mock_event):
+        response = await _post_webhook(client, payload)
+    assert response.status_code == 200
+
+    appointment = await Appointment.find_one(
+        Appointment.calendly_invitee_uri == "https://api.calendly.com/scheduled_events/evt-opd/invitees/inv-opd"
+    )
+    assert appointment is None
+    person = await Person.find_one(Person.phone_number == "+919876500099")
+    assert person is None
 
 
 @pytest.mark.asyncio

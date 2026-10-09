@@ -39,6 +39,25 @@ MAX_RETRIES = 3
 BASE_BACKOFF_SECONDS = 1.0
 
 
+def _extract_error_codes(response: httpx.Response) -> list[str]:
+    """Pulls every details[].code out of a Calendly error body, e.g.:
+    {"title": "Invalid Argument", "message": "...", "details": [{"code": "already_filled", ...}]}
+    (real body, confirmed live 2026-10-09). Some error shapes have no "details" at all — e.g. a
+    plain 401 {"title": "Unauthenticated", "message": "The access token is invalid"} — so this
+    returns [] whenever the body isn't JSON, or has no "details" list, or no "code" per entry,
+    rather than raising. Used by services/calendly_sync_service.py to tell a permanent,
+    slot-specific conflict ("already_filled") apart from every other kind of failure.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return []
+    details = body.get("details") if isinstance(body, dict) else None
+    if not isinstance(details, list):
+        return []
+    return [d["code"] for d in details if isinstance(d, dict) and isinstance(d.get("code"), str)]
+
+
 class CalendlyClient:
     def __init__(self) -> None:
         self._base_url = settings.calendly_base_url.rstrip("/")
@@ -92,7 +111,8 @@ class CalendlyClient:
                         "calendly_request_failed", url=url, status_code=response.status_code, body=response.text
                     )
                     raise CalendlyIntegrationError(
-                        f"Calendly API returned {response.status_code}: {response.text}"
+                        f"Calendly API returned {response.status_code}: {response.text}",
+                        error_codes=_extract_error_codes(response),
                     )
 
                 return response
