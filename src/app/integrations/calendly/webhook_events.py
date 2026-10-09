@@ -41,6 +41,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from app.core.logging import get_logger
+from app.integrations.calendly.schemas import CalendlyQuestionAndAnswer
 
 logger = get_logger(__name__)
 
@@ -55,6 +56,10 @@ class CalendlyWebhookInviteePayload(BaseModel):
     status: str | None = None
     timezone: str | None = None
     text_reminder_number: str | None = None
+    # Answers to the Event Type's custom questions — see calendly_sync_service._resolve_person's
+    # fallback for a phone collected via a custom question rather than the native SMS-reminder
+    # field (which is the only thing that populates text_reminder_number above).
+    questions_and_answers: list[CalendlyQuestionAndAnswer] | None = None
     rescheduled: bool | None = None
     old_invitee: str | None = None
     new_invitee: str | None = None

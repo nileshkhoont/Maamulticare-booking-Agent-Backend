@@ -10,6 +10,7 @@ os.environ.setdefault("CALENDLY_PAT", "test-calendly-pat")
 os.environ.setdefault("CALENDLY_EVENT_TYPE_URI", "https://api.calendly.com/event_types/TEST00000000AAAA")
 os.environ.setdefault("CALENDLY_EVENT_LOCATION_KIND", "")
 os.environ.setdefault("CALENDLY_EVENT_LOCATION_TEXT", "")
+os.environ.setdefault("CALENDLY_EVENT_PHONE_QUESTION", "")
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient

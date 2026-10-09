@@ -15,6 +15,7 @@ afterward too, since webhook delivery is never 100% guaranteed. Two independent,
 import asyncio
 from datetime import UTC, datetime, timedelta
 
+from app.core.config import settings
 from app.core.constants import CalendlySyncStatus
 from app.core.logging import get_logger
 from app.db.mongodb import close_db, connect_db
@@ -73,6 +74,14 @@ async def _inbound_catch_up() -> int:
         except Exception:
             logger.exception("calendly_reconciliation_list_events_failed", status=status)
 
+    # Calendly's GET /scheduled_events has no event_type filter param (confirmed against its own
+    # OpenAPI spec) — it returns every event for the host across ALL of their Event Types. This
+    # account has more than one (e.g. a separate "OPD Consultation" type unrelated to this
+    # integration), so without this filter their bookings would get synced into our Appointments
+    # collection too. Filter client-side to only the one Event Type this integration owns —
+    # settings.calendly_event_type_uri, read from CALENDLY_EVENT_TYPE_URI in .env, never hardcoded.
+    events = [e for e in events if e.event_type == settings.calendly_event_type_uri]
+
     processed = 0
     for scheduled_event in events:
         event_uuid = scheduled_event.uri.rstrip("/").rsplit("/", 1)[-1]
@@ -91,6 +100,7 @@ async def _inbound_catch_up() -> int:
                 status=invitee.status,
                 timezone=invitee.timezone,
                 text_reminder_number=invitee.text_reminder_number,
+                questions_and_answers=invitee.questions_and_answers,
                 rescheduled=invitee.rescheduled,
                 old_invitee=invitee.old_invitee,
                 new_invitee=invitee.new_invitee,

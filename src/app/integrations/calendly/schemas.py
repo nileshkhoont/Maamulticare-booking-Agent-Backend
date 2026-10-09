@@ -23,11 +23,20 @@ class CalendlyInviteeInput(BaseModel):
     text_reminder_number: str | None = None
 
 
+class CalendlyQuestionAndAnswer(BaseModel):
+    # `question` must exactly match one of the Event Type's own custom_questions[].name
+    # (case-sensitive) — confirmed live 2026-10-09 against Calendly's real API behavior.
+    question: str
+    answer: str
+    position: int
+
+
 class CalendlyCreateInviteeRequest(BaseModel):
     event_type: str  # Event Type URI
     start_time: str  # UTC ISO8601
     invitee: CalendlyInviteeInput
     location: CalendlyLocationInput | None = None
+    questions_and_answers: list[CalendlyQuestionAndAnswer] | None = None
 
 
 class CalendlyInviteeResource(BaseModel):
@@ -44,6 +53,12 @@ class CalendlyInviteeResource(BaseModel):
     status: str | None = None  # "active" | "canceled"
     timezone: str | None = None
     text_reminder_number: str | None = None
+    # The invitee's answers to the Event Type's custom questions (confirmed live 2026-10-09 this
+    # is present on both POST /invitees' response and GET .../invitees' collection items) — used
+    # as a fallback phone source in calendly_sync_service._resolve_person for a direct-Calendly
+    # booking whose phone was only collected via a custom question, not Calendly's native SMS-
+    # reminder field (which is the only thing that populates text_reminder_number above).
+    questions_and_answers: list[CalendlyQuestionAndAnswer] | None = None
     # Reschedule-pair linkage — see services/calendly_sync_service.py. On the CANCELED half of a
     # reschedule pair, `rescheduled` is true and `new_invitee` points at the replacement. On the
     # CREATED (new) half, `old_invitee` points back at the one it replaced.
@@ -67,6 +82,7 @@ class CalendlyCancelEventResponse(BaseModel):
 
 class CalendlyScheduledEventResource(BaseModel):
     uri: str
+    event_type: str | None = None  # Event Type URI this event was booked against
     start_time: str | None = None
     end_time: str | None = None
     status: str | None = None  # "active" | "canceled"

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.core.exceptions import CalendlyIntegrationError
 from app.integrations.calendly.schemas import CalendlyCreateInviteeResponse, CalendlyInviteeResource
 from app.models.appointment import Appointment
 from app.models.person import Person
@@ -160,6 +161,125 @@ async def test_push_booking_omits_location_when_not_configured(business_config):
 
 
 @pytest.mark.asyncio
+async def test_push_booking_answers_required_phone_question_when_configured(business_config):
+    """Confirmed live 2026-10-09: once a REQUIRED custom question exists on the Event Type,
+    Calendly's POST /invitees rejects every booking with "Required Questions and Answers cannot
+    be blank" unless questions_and_answers supplies a matching answer. The real question text
+    fetched from the account: "Please enter your WhatsApp mobile number (with country code).
+    Example: 91XXXXXXXXXX", position 0.
+    """
+    from app.core.config import settings
+
+    person = Person(full_name="Asha", phone_number="+919825000013", email="asha@example.com")
+    await person.insert()
+    appointment = Appointment(
+        person_id=str(person.id),
+        appointment_datetime="2026-11-08T05:00:00+00:00",
+        status="booked",
+        booking_source="admin_scheduled_call",
+        scheduling_method="api",
+        calendly_sync_status="pending",
+    )
+    await appointment.insert()
+
+    mock_create = AsyncMock(
+        return_value=CalendlyCreateInviteeResponse(
+            resource=CalendlyInviteeResource(
+                uri="https://api.calendly.com/scheduled_events/evt-q/invitees/inv-q",
+                event="https://api.calendly.com/scheduled_events/evt-q",
+            )
+        )
+    )
+    original_question = settings.calendly_event_phone_question
+    original_position = settings.calendly_event_phone_question_position
+    settings.calendly_event_phone_question = (
+        "Please enter your WhatsApp mobile number (with country code). Example: 91XXXXXXXXXX"
+    )
+    settings.calendly_event_phone_question_position = 0
+    try:
+        with patch("app.services.calendly_sync_service.calendly_client.create_invitee", mock_create):
+            await calendly_sync_service.process_pending_appointment(appointment)
+    finally:
+        settings.calendly_event_phone_question = original_question
+        settings.calendly_event_phone_question_position = original_position
+
+    sent_request = mock_create.call_args.args[0]
+    assert sent_request.questions_and_answers is not None
+    assert len(sent_request.questions_and_answers) == 1
+    qa = sent_request.questions_and_answers[0]
+    assert qa.question == "Please enter your WhatsApp mobile number (with country code). Example: 91XXXXXXXXXX"
+    assert qa.answer == "+919825000013"
+    assert qa.position == 0
+
+
+@pytest.mark.asyncio
+async def test_push_booking_omits_questions_and_answers_when_not_configured(business_config):
+    """When the Event Type has no required question configured (the test-env default), POST
+    /invitees must omit questions_and_answers entirely.
+    """
+    person = Person(full_name="Vikram", phone_number="+919825000014", email="vikram@example.com")
+    await person.insert()
+    appointment = Appointment(
+        person_id=str(person.id),
+        appointment_datetime="2026-11-09T05:00:00+00:00",
+        status="booked",
+        booking_source="admin_scheduled_call",
+        scheduling_method="api",
+        calendly_sync_status="pending",
+    )
+    await appointment.insert()
+
+    mock_create = AsyncMock(
+        return_value=CalendlyCreateInviteeResponse(
+            resource=CalendlyInviteeResource(
+                uri="https://api.calendly.com/scheduled_events/evt-noq/invitees/inv-noq",
+                event="https://api.calendly.com/scheduled_events/evt-noq",
+            )
+        )
+    )
+    with patch("app.services.calendly_sync_service.calendly_client.create_invitee", mock_create):
+        await calendly_sync_service.process_pending_appointment(appointment)
+
+    sent_request = mock_create.call_args.args[0]
+    assert sent_request.questions_and_answers is None
+
+
+@pytest.mark.asyncio
+async def test_push_booking_blank_questions_error_gets_actionable_hint(business_config):
+    """"Required Questions and Answers cannot be blank" has no structured error code (unlike
+    already_filled/invalid_location_choice) — confirm the stored calendly_sync_error is enriched
+    with an actionable hint rather than just the raw Calendly message, and that it stays the
+    normal retryable "failed" (not "permanently_failed"), since fixing the config should let it
+    succeed again rather than giving up on this one appointment forever.
+    """
+    person = Person(full_name="Harsh", phone_number="+917600181441")
+    await person.insert()
+    appointment = Appointment(
+        person_id=str(person.id),
+        appointment_datetime="2026-11-10T05:00:00+00:00",
+        status="booked",
+        booking_source="admin_scheduled_call",
+        scheduling_method="api",
+        calendly_sync_status="pending",
+    )
+    await appointment.insert()
+
+    mock_create = AsyncMock(
+        side_effect=CalendlyIntegrationError(
+            'Calendly API returned 400: {"title":"Invalid Argument",'
+            '"message":"Required Questions and Answers cannot be blank."}'
+        )
+    )
+    with patch("app.services.calendly_sync_service.calendly_client.create_invitee", mock_create):
+        await calendly_sync_service.process_pending_appointment(appointment)
+
+    refreshed = await Appointment.get(appointment.id)
+    assert refreshed.calendly_sync_status == "failed"
+    assert "likely cause" in refreshed.calendly_sync_error
+    assert "CALENDLY_EVENT_PHONE_QUESTION" in refreshed.calendly_sync_error
+
+
+@pytest.mark.asyncio
 async def test_push_booking_skips_if_already_has_invitee_uri(business_config):
     """A row re-queued (e.g. by the reconciliation sweep) that already has a calendly_invitee_uri
     must not be pushed a second time.
@@ -241,6 +361,69 @@ async def test_push_cancellation_is_not_applicable_if_never_reached_calendly(bus
 
 
 @pytest.mark.asyncio
+async def test_push_booking_already_filled_marks_permanently_failed(business_config):
+    """"already_filled" is specific to THIS appointment's exact requested slot — retrying would
+    hit the identical real conflict every time, so it must land on "permanently_failed", not the
+    normal "failed" (which the reconciliation sweep auto-retries forever).
+    """
+    person = Person(full_name="Harsh", phone_number="+917600181441")
+    await person.insert()
+    appointment = Appointment(
+        person_id=str(person.id),
+        appointment_datetime="2026-11-06T05:00:00+00:00",
+        status="booked",
+        booking_source="admin_scheduled_call",
+        scheduling_method="api",
+        calendly_sync_status="pending",
+    )
+    await appointment.insert()
+
+    mock_create = AsyncMock(
+        side_effect=CalendlyIntegrationError(
+            'Calendly API returned 400: {"details":[{"code":"already_filled"}]}',
+            error_codes=["already_filled"],
+        )
+    )
+    with patch("app.services.calendly_sync_service.calendly_client.create_invitee", mock_create):
+        await calendly_sync_service.process_pending_appointment(appointment)
+
+    refreshed = await Appointment.get(appointment.id)
+    assert refreshed.calendly_sync_status == "permanently_failed"
+    assert refreshed.calendly_sync_error is not None
+
+
+@pytest.mark.asyncio
+async def test_push_booking_invalid_location_choice_stays_retryable(business_config):
+    """"invalid_location_choice" reflects a system-wide config mistake, not something specific to
+    this one appointment — it must land on the normal "failed" so the reconciliation sweep keeps
+    retrying it (and self-heals once the config is fixed), unlike "already_filled".
+    """
+    person = Person(full_name="Harsh", phone_number="+917600181441")
+    await person.insert()
+    appointment = Appointment(
+        person_id=str(person.id),
+        appointment_datetime="2026-11-07T05:00:00+00:00",
+        status="booked",
+        booking_source="admin_scheduled_call",
+        scheduling_method="api",
+        calendly_sync_status="pending",
+    )
+    await appointment.insert()
+
+    mock_create = AsyncMock(
+        side_effect=CalendlyIntegrationError(
+            'Calendly API returned 400: {"details":[{"code":"invalid_location_choice"}]}',
+            error_codes=["invalid_location_choice"],
+        )
+    )
+    with patch("app.services.calendly_sync_service.calendly_client.create_invitee", mock_create):
+        await calendly_sync_service.process_pending_appointment(appointment)
+
+    refreshed = await Appointment.get(appointment.id)
+    assert refreshed.calendly_sync_status == "failed"
+
+
+@pytest.mark.asyncio
 async def test_resolve_person_prefers_phone_over_email():
     payload_person = await calendly_sync_service._resolve_person(
         _FakePayload(text_reminder_number="+919876500099", email="someone@example.com", name="Someone")
@@ -268,11 +451,70 @@ async def test_resolve_person_returns_none_when_unresolvable():
     assert payload_person is None
 
 
+@pytest.mark.asyncio
+async def test_resolve_person_falls_back_to_custom_question_answer(business_config):
+    """A direct-Calendly booking whose phone was only collected via the custom question
+    (CALENDLY_EVENT_PHONE_QUESTION) — not Calendly's native SMS-reminder field, so
+    text_reminder_number is empty — must still resolve via that question's answer.
+    """
+    from app.core.config import settings
+    from app.integrations.calendly.schemas import CalendlyQuestionAndAnswer
+
+    original_question = settings.calendly_event_phone_question
+    settings.calendly_event_phone_question = "Please enter your WhatsApp mobile number"
+    try:
+        payload_person = await calendly_sync_service._resolve_person(
+            _FakePayload(
+                text_reminder_number=None,
+                email=None,
+                name="Custom Question Patient",
+                questions_and_answers=[
+                    CalendlyQuestionAndAnswer(
+                        question="Please enter your WhatsApp mobile number", answer="+919876500055", position=0
+                    )
+                ],
+            )
+        )
+    finally:
+        settings.calendly_event_phone_question = original_question
+
+    assert payload_person is not None
+    assert payload_person.phone_number == "+919876500055"
+
+
+@pytest.mark.asyncio
+async def test_resolve_person_ignores_non_matching_question_text(business_config):
+    """The question text must match CALENDLY_EVENT_PHONE_QUESTION exactly — an answer to some
+    other custom question must never be mistaken for a phone number.
+    """
+    from app.core.config import settings
+    from app.integrations.calendly.schemas import CalendlyQuestionAndAnswer
+
+    original_question = settings.calendly_event_phone_question
+    settings.calendly_event_phone_question = "Please enter your WhatsApp mobile number"
+    try:
+        payload_person = await calendly_sync_service._resolve_person(
+            _FakePayload(
+                text_reminder_number=None,
+                email=None,
+                name="Nobody",
+                questions_and_answers=[
+                    CalendlyQuestionAndAnswer(question="What is your main concern?", answer="back pain", position=0)
+                ],
+            )
+        )
+    finally:
+        settings.calendly_event_phone_question = original_question
+
+    assert payload_person is None
+
+
 class _FakePayload:
     """Minimal stand-in for CalendlyWebhookInviteePayload's fields _resolve_person reads."""
 
-    def __init__(self, text_reminder_number, email, name):
+    def __init__(self, text_reminder_number, email, name, questions_and_answers=None):
         self.text_reminder_number = text_reminder_number
         self.email = email
         self.name = name
+        self.questions_and_answers = questions_and_answers
         self.uri = "https://api.calendly.com/scheduled_events/evt-x/invitees/inv-x"
