@@ -17,7 +17,7 @@ APPOINTMENTS_VALIDATOR = {
             "person_id": {"bsonType": "string"},
             "appointment_datetime": {"bsonType": "date"},
             "status": {"enum": ["booked", "rescheduled", "cancelled", "completed", "no_show"]},
-            "booking_source": {"enum": ["inbound_call", "admin_scheduled_call"]},
+            "booking_source": {"enum": ["inbound_call", "admin_scheduled_call", "calendly_direct"]},
         },
     }
 }

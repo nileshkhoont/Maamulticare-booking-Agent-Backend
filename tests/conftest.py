@@ -5,6 +5,11 @@ os.environ.setdefault("MONGODB_DB_NAME", "ai_calling_agent_test")
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 os.environ.setdefault("AGENT_TOOL_SECRET", "test-tool-secret")
 os.environ.setdefault("EDESY_WEBHOOK_SECRET", "test-webhook-secret")
+os.environ.setdefault("CALENDLY_WEBHOOK_SIGNING_KEY", "test-calendly-signing-key")
+os.environ.setdefault("CALENDLY_PAT", "test-calendly-pat")
+os.environ.setdefault("CALENDLY_EVENT_TYPE_URI", "https://api.calendly.com/event_types/TEST00000000AAAA")
+os.environ.setdefault("CALENDLY_EVENT_LOCATION_KIND", "")
+os.environ.setdefault("CALENDLY_EVENT_LOCATION_TEXT", "")
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient

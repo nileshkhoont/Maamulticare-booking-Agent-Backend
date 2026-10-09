@@ -2,7 +2,12 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
-from app.core.constants import AppointmentStatus, BookingSource
+from app.core.constants import (
+    AppointmentStatus,
+    BookingSource,
+    CalendlySchedulingMethod,
+    CalendlySyncStatus,
+)
 
 
 class AppointmentCreate(BaseModel):
@@ -38,6 +43,13 @@ class AppointmentOut(BaseModel):
     created_by_call_id: str | None = None
     created_at: datetime
     updated_at: datetime
+    # Calendly sync — read-only wire exposure only (see models/appointment.py); no admin dashboard
+    # UI consumes these yet, this phase is backend-only.
+    scheduling_method: CalendlySchedulingMethod | None = None
+    calendly_sync_status: CalendlySyncStatus | None = None
+    calendly_sync_error: str | None = None
+    calendly_last_synced_at: datetime | None = None
+    is_placeholder_email: bool = False
 
 
 class SlotCheckRequest(BaseModel):

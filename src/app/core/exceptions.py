@@ -43,6 +43,11 @@ class EdesyIntegrationError(AppError):
     default_message = "Edesy voice agent API request failed"
 
 
+class CalendlyIntegrationError(AppError):
+    status_code = status.HTTP_502_BAD_GATEWAY
+    default_message = "Calendly API request failed"
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
