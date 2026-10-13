@@ -38,6 +38,7 @@ class CallFilterParams(BaseModel):
 
 class DashboardStats(BaseModel):
     booked_appointments: int
+    rescheduled_appointments: int
     cancelled_appointments: int
     inbound_calls: int
     outbound_calls: int

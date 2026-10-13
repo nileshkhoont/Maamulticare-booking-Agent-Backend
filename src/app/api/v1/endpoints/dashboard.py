@@ -15,8 +15,10 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 async def get_dashboard_stats(_: Admin = Depends(get_current_admin)) -> DashboardStats:
     """Aggregated booked/missed/outcome counts for the admin overview page."""
     booked = await Appointment.find(
-        Appointment.is_deleted == False,  # noqa: E712
-        {"status": {"$in": [AppointmentStatus.booked.value, AppointmentStatus.rescheduled.value]}},
+        Appointment.is_deleted == False, Appointment.status == AppointmentStatus.booked  # noqa: E712
+    ).count()
+    rescheduled = await Appointment.find(
+        Appointment.is_deleted == False, Appointment.status == AppointmentStatus.rescheduled  # noqa: E712
     ).count()
     cancelled = await Appointment.find(
         Appointment.is_deleted == False, Appointment.status == AppointmentStatus.cancelled  # noqa: E712
@@ -42,6 +44,7 @@ async def get_dashboard_stats(_: Admin = Depends(get_current_admin)) -> Dashboar
 
     return DashboardStats(
         booked_appointments=booked,
+        rescheduled_appointments=rescheduled,
         cancelled_appointments=cancelled,
         inbound_calls=inbound,
         outbound_calls=outbound,

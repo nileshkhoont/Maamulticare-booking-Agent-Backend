@@ -56,7 +56,7 @@ class GoogleCalendarSyncService:
         lines = [f"Patient: {person.full_name or 'Unknown'}", f"Phone: {person.phone_number}"]
         if appointment.notes:
             lines.append(f"Notes: {appointment.notes}")
-        lines.append("Booked via the Edesy AI phone system — do not edit this event directly.")
+        lines.append("Booked via Movya AI calling system — do not edit this event directly.")
         return "\n".join(lines)
 
     # --- Outbound: app -> Google Calendar (called only by google_calendar_push_task's sweep) ---
