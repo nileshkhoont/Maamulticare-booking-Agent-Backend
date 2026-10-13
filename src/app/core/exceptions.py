@@ -40,7 +40,7 @@ class InvalidCredentialsError(AppError):
 
 class EdesyIntegrationError(AppError):
     status_code = status.HTTP_502_BAD_GATEWAY
-    default_message = "Edesy voice agent API request failed"
+    default_message = "Voice agent API request failed"
 
 
 class GoogleCalendarIntegrationError(AppError):

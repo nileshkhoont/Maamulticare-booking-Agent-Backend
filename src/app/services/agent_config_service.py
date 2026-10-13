@@ -12,8 +12,7 @@ class AgentConfigService:
     def _agent_id(self) -> str:
         if not settings.edesy_agent_id:
             raise AppError(
-                "EDESY_AGENT_ID is not configured — create the agent in the Edesy dashboard and "
-                "set its id in .env"
+                "AGENT_ID is not configured — create the voice agent and set its id in .env"
             )
         return settings.edesy_agent_id
 

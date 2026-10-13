@@ -35,7 +35,7 @@ class EdesyClient:
     def _headers(self) -> dict[str, str]:
         if not settings.edesy_api_key:
             raise EdesyIntegrationError(
-                "EDESY_API_KEY is not configured — set it before calling the Edesy API"
+                "The voice agent's API key is not configured — set it before placing calls"
             )
         return {
             "Authorization": f"Bearer {settings.edesy_api_key}",
@@ -60,7 +60,7 @@ class EdesyClient:
                 except httpx.RequestError as exc:
                     logger.error("edesy_request_error", url=url, error=str(exc), attempt=attempt)
                     if not retryable or attempt > MAX_RETRIES:
-                        raise EdesyIntegrationError(f"Edesy API request failed: {exc}") from exc
+                        raise EdesyIntegrationError(f"Voice agent API request failed: {exc}") from exc
                     await asyncio.sleep(BASE_BACKOFF_SECONDS * attempt)
                     continue
 
@@ -78,7 +78,7 @@ class EdesyClient:
                         "edesy_request_failed", url=url, status_code=response.status_code, body=response.text
                     )
                     raise EdesyIntegrationError(
-                        f"Edesy API returned {response.status_code}: {response.text}"
+                        f"Voice agent API returned {response.status_code}: {response.text}"
                     )
 
                 return response
