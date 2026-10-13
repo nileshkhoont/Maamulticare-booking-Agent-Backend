@@ -43,18 +43,9 @@ class EdesyIntegrationError(AppError):
     default_message = "Edesy voice agent API request failed"
 
 
-class CalendlyIntegrationError(AppError):
+class GoogleCalendarIntegrationError(AppError):
     status_code = status.HTTP_502_BAD_GATEWAY
-    default_message = "Calendly API request failed"
-
-    def __init__(self, message: str | None = None, error_codes: list[str] | None = None):
-        # Calendly's error body shape (confirmed against real responses, e.g. {"details":
-        # [{"code": "already_filled", ...}]}) — extracted in integrations/calendly/client.py so
-        # callers can distinguish a permanent, slot-specific conflict ("already_filled") from
-        # everything else without re-parsing the raw message string. Empty/None for error shapes
-        # with no "details" (e.g. a plain 401 {"title": "Unauthenticated", ...}).
-        self.error_codes = error_codes or []
-        super().__init__(message)
+    default_message = "Google Calendar API request failed"
 
 
 def register_exception_handlers(app: FastAPI) -> None:

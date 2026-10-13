@@ -71,67 +71,38 @@ class Settings(BaseSettings):
     # Redis isn't available (e.g. local Windows dev without Docker/WSL set up).
     enable_inprocess_scheduler: bool = False
 
-    # Calendly (api.calendly.com) — mirrors appointments booked/rescheduled/cancelled in our own
-    # system onto Dr. Shyani's Calendly calendar, and (once CALENDLY_WEBHOOK_SIGNING_KEY is set,
-    # which requires upgrading off Calendly's free plan — webhooks are a paid-plan-only feature,
-    # confirmed against Calendly's own docs 2026-10-08) syncs changes made directly in Calendly
-    # back into ours. See services/calendly_sync_service.py.
-    calendly_base_url: str = "https://api.calendly.com"
-    # Personal Access Token — officially Calendly's recommended auth for exactly this case (one
-    # backend integration acting on one organization's own account), not OAuth: no multi-tenant
-    # "connect any user's Calendly" flow is needed here, so there's no client id/secret/redirect
-    # URI to manage. Generated from Calendly's own Integrations & Apps page.
-    calendly_pat: str | None = None
-    # The Calendly Event Type to book every appointment against (its own URI, e.g.
-    # "https://api.calendly.com/event_types/AAAAAAAAAAAAAAAA") — a single fixed consultation-type
-    # event, not chosen per-appointment. Required before any outbound push can actually succeed.
-    calendly_event_type_uri: str | None = None
-    # The above Event Type's configured location "kind" (e.g. "physical", "google_conference",
-    # "phone_call") — Calendly's POST /invitees REQUIRES a matching `location` object whenever the
-    # Event Type specifies one, and REJECTS it entirely when the Event Type specifies none, so this
-    # must mirror whatever's actually configured on CALENDLY_EVENT_TYPE_URI in the Calendly
-    # dashboard (Event Types -> this event -> Location). Left unset, _push_booking sends no
-    # location at all — only correct if the Event Type itself has none configured.
-    calendly_event_location_kind: str | None = None
-    # Free-text accompanying the kind above — e.g. the clinic's physical address for "physical",
-    # or a dial-in number for "phone_call". Not needed for "google_conference" (Calendly
-    # auto-generates the meeting link). Ignored if calendly_event_location_kind is unset.
-    calendly_event_location_text: str | None = None
-    # Exact, case-sensitive text of a REQUIRED custom question on CALENDLY_EVENT_TYPE_URI (e.g.
-    # a phone-number question added directly in the Calendly dashboard) — confirmed live 2026-10-09
-    # that Calendly's POST /invitees REJECTS the booking entirely ("Required Questions and Answers
-    # cannot be blank") if a required question has no matching answer in the request. Must match
-    # that Event Type's own custom_questions[].name byte-for-byte (fetch via GET /event_types/<id>
-    # to confirm, never guess/retype from the dashboard UI — whitespace/punctuation differences
-    # are rejected the same as the location-text mismatch was). Left unset, no questions_and_
-    # answers are sent at all — only correct if the Event Type has no required questions.
-    calendly_event_phone_question: str | None = None
-    # That same question's 0-indexed position among the Event Type's custom_questions — also from
-    # custom_questions[].position in that same GET /event_types/<id> response. Ignored if
-    # calendly_event_phone_question is unset.
-    calendly_event_phone_question_position: int = 0
-    # HMAC-SHA256 key for verifying the `Calendly-Webhook-Signature` header on inbound deliveries
-    # at /api/v1/webhooks/calendly — printed by scripts/setup_calendly_webhook.py when the webhook
-    # subscription is created (a one-off, manually-run step, NOT automatic at startup — see that
-    # script's own docstring for why). Left unset until the account is upgraded to a plan that
-    # supports webhooks at all; the route 401s everything until this is configured, same as how
-    # EDESY_WEBHOOK_SECRET unset would behave.
-    calendly_webhook_signing_key: str | None = None
-    # Replay-attack tolerance window for a webhook's `t=` timestamp, per Calendly's own documented
-    # recommendation (~3 minutes).
-    calendly_webhook_tolerance_seconds: int = 180
-    # Calendly requires an invitee email on every booking, but patients here are identified by
-    # phone and usually have no email on file yet. This fixed address is used whenever a patient's
-    # own Person.email is blank, so every appointment still syncs to Calendly regardless — see
-    # Appointment.is_placeholder_email, which tracks which bookings used it so this is easy to
-    # migrate off once staff start collecting real emails.
-    calendly_placeholder_email: str = "harshjagani@movya.com"
-    # How often workers/tasks/calendly_push_task.py's sweep looks for Appointments with
-    # calendly_sync_status=pending to push — mirrors outbound_call_poll_interval_seconds's role
-    # for the (unrelated) outbound-call queue. A push is poll-based, not fired inline from the
-    # book/reschedule/cancel request itself, matching this codebase's existing convention of
-    # never calling an external integration synchronously from an admin-facing request.
-    calendly_push_poll_interval_seconds: int = 30
+    # Google Calendar — a one-way, OUTBOUND-ONLY mirror of appointments onto a single dedicated
+    # calendar, purely for the doctor's own visibility (see services/google_calendar_sync_service.py).
+    # Patients can NEVER book/reschedule/cancel through Google Calendar directly — only via the
+    # Edesy AI phone system above. There is no inbound sync, no webhooks, and no "watch" channel
+    # subscriptions of any kind.
+    #
+    # Auth is a Google Cloud SERVICE ACCOUNT (not OAuth), granted access via plain calendar sharing
+    # — confirmed to work with a 100% free personal Gmail account; no Google Workspace and no
+    # domain-wide delegation needed (that's a separate, Workspace-only mechanism this integration
+    # does not use). Setup: create a GCP project -> enable the Calendar API -> create a Service
+    # Account -> download its JSON key -> in the doctor's own Gmail, create a NEW secondary
+    # calendar (Settings -> "Create new calendar", NOT the primary one) -> share that calendar
+    # with the service account's own email (the JSON key's "client_email" field), permission
+    # "Make changes to events".
+    google_service_account_json: str | None = None
+    # The dedicated secondary calendar's own ID (NOT the doctor's "primary" calendar) — found on
+    # its own Settings page under "Integrate calendar", looks like
+    # "xxxxxxxxxxxxxxxxxxxxxxxxxxxx@group.calendar.google.com".
+    google_calendar_id: str | None = None
+    # Plain text shown in each event's `location` field (e.g. the hospital's physical address).
+    # Optional — a single free-text string, with no "kind" concept to configure (unlike a
+    # multi-location-type scheduling product), since Calendar's `location` field is just text.
+    google_calendar_event_location: str | None = None
+    # Fallback event duration when Appointment.duration_minutes wasn't specified at booking time
+    # — the event's end time becomes start + this many minutes.
+    google_calendar_default_event_duration_minutes: int = 30
+    # How often workers/tasks/google_calendar_push_task.py's sweep looks for Appointments with
+    # google_calendar_sync_status=pending to push — mirrors outbound_call_poll_interval_seconds's
+    # role for the (unrelated) outbound-call queue. Poll-based, not fired inline from
+    # book/reschedule/cancel, matching this codebase's existing convention of never calling an
+    # external integration synchronously from an admin-facing request.
+    google_calendar_push_poll_interval_seconds: int = 30
 
 
 settings = Settings()

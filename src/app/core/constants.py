@@ -18,39 +18,23 @@ class AppointmentStatus(str, Enum):
 class BookingSource(str, Enum):
     inbound_call = "inbound_call"
     admin_scheduled_call = "admin_scheduled_call"
-    # A local Appointment that originated from a Calendly invitee.created webhook with no prior
-    # local record — i.e. the doctor sent someone a Calendly invite link directly, or a patient
-    # booked through a link in one of Calendly's own emails. See calendly_sync_service.py.
-    calendly_direct = "calendly_direct"
 
 
-class CalendlySchedulingMethod(str, Enum):
-    """How THIS specific Appointment row was created — the loop-prevention signal
-    calendly_sync_service.py checks before ever creating a new local row from a webhook, so a
-    webhook that's just confirming something our own app already pushed doesn't get treated as a
-    brand-new external booking. Set once, at row-creation time, never changed afterward.
+class GoogleCalendarSyncStatus(str, Enum):
+    """Queue state for pushing an app-initiated Appointment to Google Calendar — consumed by
+    workers/tasks/google_calendar_push_task.py's sweep, not by the admin-facing
+    book/reschedule/cancel request itself (which must stay fast and not block on Google's
+    latency/retries). This is a one-way, outbound-only mirror — there is no inbound direction at
+    all, so no "permanently_failed" state is needed: unlike a service with Event-Type-style slot
+    reservations, Google Calendar has no concept of a time being "already taken" — calendars
+    natively allow overlapping events, so that whole failure class doesn't exist here.
     """
 
-    api = "api"  # created by appointment_service (our app) — book_first_time/reschedule_existing
-    calendly_direct = "calendly_direct"  # created by the inbound webhook/reconciliation handler
-
-
-class CalendlySyncStatus(str, Enum):
-    """Queue state for pushing an app-initiated Appointment to Calendly — consumed by
-    workers/tasks/calendly_push_task.py's sweep, not by the admin-facing book/reschedule/cancel
-    request itself (which must stay fast and not block on Calendly's latency/retries).
-    """
-
-    pending = "pending"  # needs a push (or a cancellation push) to Calendly
+    pending = "pending"  # needs a push (or a deletion push) to Google Calendar
     syncing = "syncing"  # claimed by a sweep tick, push in flight
-    synced = "synced"  # local state matches Calendly
-    failed = "failed"  # last push attempt errored — see Appointment.calendly_sync_error
-    not_applicable = "not_applicable"  # nothing to push (e.g. cancelled before ever reaching Calendly)
-    permanently_failed = "permanently_failed"  # Calendly rejected this exact slot ("already_filled")
-    # — never auto-retried by the reconciliation sweep, unlike "failed", since retrying it would
-    # just hit the same real conflict again. Unlike "failed", "pending", "syncing", or
-    # "not_applicable", this state is a deliberate dead end a human must resolve manually (e.g.
-    # rebook at a different time) — see calendly_sync_service.process_pending_appointment.
+    synced = "synced"  # local state matches Google Calendar
+    failed = "failed"  # last push attempt errored — see Appointment.google_calendar_sync_error
+    not_applicable = "not_applicable"  # nothing to push (e.g. cancelled before ever reaching Google Calendar)
 
 
 class CallType(str, Enum):

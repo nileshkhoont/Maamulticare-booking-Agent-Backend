@@ -19,12 +19,12 @@ celery_app.conf.beat_schedule = {
         "task": "app.workers.tasks.recording_backfill_task.backfill_missing_recordings",
         "schedule": 300.0,  # every 5 minutes
     },
-    "push-pending-calendly-appointments": {
-        "task": "app.workers.tasks.calendly_push_task.push_pending_calendly_appointments",
-        "schedule": settings.calendly_push_poll_interval_seconds,
+    "push-pending-google-calendar-appointments": {
+        "task": "app.workers.tasks.google_calendar_push_task.push_pending_google_calendar_appointments",
+        "schedule": settings.google_calendar_push_poll_interval_seconds,
     },
-    "reconcile-calendly": {
-        "task": "app.workers.tasks.calendly_reconciliation_task.reconcile_calendly",
+    "reconcile-google-calendar": {
+        "task": "app.workers.tasks.google_calendar_reconciliation_task.reconcile_google_calendar",
         "schedule": 600.0,  # every 10 minutes — mirrors the stuck-schedule sweep's cadence
     },
 }
