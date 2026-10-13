@@ -20,6 +20,23 @@ class BookingSource(str, Enum):
     admin_scheduled_call = "admin_scheduled_call"
 
 
+class GoogleCalendarSyncStatus(str, Enum):
+    """Queue state for pushing an app-initiated Appointment to Google Calendar — consumed by
+    workers/tasks/google_calendar_push_task.py's sweep, not by the admin-facing
+    book/reschedule/cancel request itself (which must stay fast and not block on Google's
+    latency/retries). This is a one-way, outbound-only mirror — there is no inbound direction at
+    all, so no "permanently_failed" state is needed: unlike a service with Event-Type-style slot
+    reservations, Google Calendar has no concept of a time being "already taken" — calendars
+    natively allow overlapping events, so that whole failure class doesn't exist here.
+    """
+
+    pending = "pending"  # needs a push (or a deletion push) to Google Calendar
+    syncing = "syncing"  # claimed by a sweep tick, push in flight
+    synced = "synced"  # local state matches Google Calendar
+    failed = "failed"  # last push attempt errored — see Appointment.google_calendar_sync_error
+    not_applicable = "not_applicable"  # nothing to push (e.g. cancelled before ever reaching Google Calendar)
+
+
 class CallType(str, Enum):
     inbound = "inbound"
     outbound_admin_scheduled = "outbound_admin_scheduled"

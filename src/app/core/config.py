@@ -71,5 +71,38 @@ class Settings(BaseSettings):
     # Redis isn't available (e.g. local Windows dev without Docker/WSL set up).
     enable_inprocess_scheduler: bool = False
 
+    # Google Calendar — a one-way, OUTBOUND-ONLY mirror of appointments onto a single dedicated
+    # calendar, purely for the doctor's own visibility (see services/google_calendar_sync_service.py).
+    # Patients can NEVER book/reschedule/cancel through Google Calendar directly — only via the
+    # Edesy AI phone system above. There is no inbound sync, no webhooks, and no "watch" channel
+    # subscriptions of any kind.
+    #
+    # Auth is a Google Cloud SERVICE ACCOUNT (not OAuth), granted access via plain calendar sharing
+    # — confirmed to work with a 100% free personal Gmail account; no Google Workspace and no
+    # domain-wide delegation needed (that's a separate, Workspace-only mechanism this integration
+    # does not use). Setup: create a GCP project -> enable the Calendar API -> create a Service
+    # Account -> download its JSON key -> in the doctor's own Gmail, create a NEW secondary
+    # calendar (Settings -> "Create new calendar", NOT the primary one) -> share that calendar
+    # with the service account's own email (the JSON key's "client_email" field), permission
+    # "Make changes to events".
+    google_service_account_json: str | None = None
+    # The dedicated secondary calendar's own ID (NOT the doctor's "primary" calendar) — found on
+    # its own Settings page under "Integrate calendar", looks like
+    # "xxxxxxxxxxxxxxxxxxxxxxxxxxxx@group.calendar.google.com".
+    google_calendar_id: str | None = None
+    # Plain text shown in each event's `location` field (e.g. the hospital's physical address).
+    # Optional — a single free-text string, with no "kind" concept to configure (unlike a
+    # multi-location-type scheduling product), since Calendar's `location` field is just text.
+    google_calendar_event_location: str | None = None
+    # Fallback event duration when Appointment.duration_minutes wasn't specified at booking time
+    # — the event's end time becomes start + this many minutes.
+    google_calendar_default_event_duration_minutes: int = 30
+    # How often workers/tasks/google_calendar_push_task.py's sweep looks for Appointments with
+    # google_calendar_sync_status=pending to push — mirrors outbound_call_poll_interval_seconds's
+    # role for the (unrelated) outbound-call queue. Poll-based, not fired inline from
+    # book/reschedule/cancel, matching this codebase's existing convention of never calling an
+    # external integration synchronously from an admin-facing request.
+    google_calendar_push_poll_interval_seconds: int = 30
+
 
 settings = Settings()

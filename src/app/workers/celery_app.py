@@ -21,6 +21,8 @@ celery_app = Celery(
         "app.workers.tasks.outbound_call_task",
         "app.workers.tasks.missed_call_retry_task",
         "app.workers.tasks.recording_backfill_task",
+        "app.workers.tasks.google_calendar_push_task",
+        "app.workers.tasks.google_calendar_reconciliation_task",
     ],
 )
 

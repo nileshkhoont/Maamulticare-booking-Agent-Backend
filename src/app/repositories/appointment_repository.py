@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 from beanie import PydanticObjectId
 
-from app.core.constants import AppointmentStatus
+from app.core.constants import AppointmentStatus, GoogleCalendarSyncStatus
 from app.models.appointment import Appointment
 from app.schemas.common import PageParams
 
@@ -130,6 +130,15 @@ class AppointmentRepository:
         if person_id:
             conditions.append(Appointment.person_id == person_id)
         return await Appointment.find(*conditions).sort(-Appointment.appointment_datetime).to_list()
+
+    async def list_pending_google_calendar_sync(self) -> list[Appointment]:
+        """Feeds workers/tasks/google_calendar_push_task.py's sweep — every Appointment still
+        owed a push (or a deletion push) to Google Calendar.
+        """
+        return await Appointment.find(
+            Appointment.google_calendar_sync_status == GoogleCalendarSyncStatus.pending,
+            Appointment.is_deleted == False,  # noqa: E712
+        ).to_list()
 
 
 appointment_repository = AppointmentRepository()

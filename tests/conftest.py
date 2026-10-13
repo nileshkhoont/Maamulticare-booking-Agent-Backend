@@ -5,6 +5,8 @@ os.environ.setdefault("MONGODB_DB_NAME", "ai_calling_agent_test")
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 os.environ.setdefault("AGENT_TOOL_SECRET", "test-tool-secret")
 os.environ.setdefault("EDESY_WEBHOOK_SECRET", "test-webhook-secret")
+os.environ.setdefault("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+os.environ.setdefault("GOOGLE_CALENDAR_ID", "test-calendar-id@group.calendar.google.com")
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient

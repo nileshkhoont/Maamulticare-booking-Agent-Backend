@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pymongo.errors import DuplicateKeyError
 
-from app.core.constants import AppointmentStatus, BookingSource
+from app.core.constants import AppointmentStatus, BookingSource, GoogleCalendarSyncStatus
 from app.core.exceptions import NotFoundError, SlotUnavailableError
 from app.models.appointment import Appointment
 from app.repositories.appointment_repository import appointment_repository
@@ -44,6 +44,8 @@ class AppointmentService:
             notes=notes,
             created_by_call_id=created_by_call_id,
             pending_edesy_call_id=pending_edesy_call_id,
+            # Queued for workers/tasks/google_calendar_push_task.py's sweep to push to Google Calendar.
+            google_calendar_sync_status=GoogleCalendarSyncStatus.pending,
         )
         try:
             await appointment.insert()
@@ -83,10 +85,17 @@ class AppointmentService:
             notes=notes or existing.notes,
             created_by_call_id=created_by_call_id,
             pending_edesy_call_id=pending_edesy_call_id,
+            # Queued for the push sweep like book_first_time.
+            google_calendar_sync_status=GoogleCalendarSyncStatus.pending,
         )
 
         # Free the old slot first so the new insert's unique-index check doesn't collide with it.
+        previous_google_calendar_sync_status = existing.google_calendar_sync_status
         existing.status = AppointmentStatus.cancelled
+        # Queues the old row's Google Calendar event deletion — rolled back below alongside the
+        # status flip if the new insert fails, so a failed reschedule never leaves the original,
+        # still-active appointment incorrectly queued to have its calendar event deleted too.
+        existing.google_calendar_sync_status = GoogleCalendarSyncStatus.pending
         await existing.save()
 
         try:
@@ -94,6 +103,7 @@ class AppointmentService:
         except DuplicateKeyError as exc:
             # Roll back the cancellation so the person keeps their original appointment.
             existing.status = AppointmentStatus.rescheduled
+            existing.google_calendar_sync_status = previous_google_calendar_sync_status
             await existing.save()
             raise SlotUnavailableError("Slot was just booked by someone else") from exc
 
@@ -107,6 +117,9 @@ class AppointmentService:
         appointment.status = AppointmentStatus.cancelled
         if reason:
             appointment.notes = f"{appointment.notes or ''}\nCancelled: {reason}".strip()
+        # Queues a Google Calendar event deletion — a no-op in google_calendar_sync_service if
+        # this appointment never actually reached Google Calendar (event_id still None).
+        appointment.google_calendar_sync_status = GoogleCalendarSyncStatus.pending
         await appointment.save()
         return appointment
 

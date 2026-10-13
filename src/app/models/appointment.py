@@ -3,7 +3,7 @@ from datetime import datetime
 import pymongo
 from beanie import Indexed
 
-from app.core.constants import AppointmentStatus, BookingSource
+from app.core.constants import AppointmentStatus, BookingSource, GoogleCalendarSyncStatus
 from app.db.base import TimestampedDocument
 
 
@@ -23,6 +23,15 @@ class Appointment(TimestampedDocument):
     # call.ended webhook creates that Call document; nothing else ever reads it.
     pending_edesy_call_id: str | None = None
 
+    # --- Google Calendar sync (one-way, outbound-only — see
+    # services/google_calendar_sync_service.py). No inbound direction exists at all, so unlike a
+    # two-way sync there is no loop-prevention signal needed here — nothing ever creates or
+    # changes an Appointment from the Google Calendar side.
+    google_calendar_event_id: str | None = None
+    google_calendar_sync_status: GoogleCalendarSyncStatus | None = None
+    google_calendar_sync_error: str | None = None  # last push failure message, for admin visibility
+    google_calendar_last_synced_at: datetime | None = None
+
     class Settings(TimestampedDocument.Settings):
         name = "appointments"
         indexes = [
@@ -37,4 +46,6 @@ class Appointment(TimestampedDocument):
                 unique=True,
                 partialFilterExpression={"status": {"$in": ["booked", "rescheduled"]}},
             ),
+            # Speeds up google_calendar_push_task's sweep query for pending/failed rows.
+            pymongo.IndexModel([("google_calendar_sync_status", pymongo.ASCENDING)], sparse=True),
         ]
