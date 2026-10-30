@@ -23,6 +23,8 @@ celery_app = Celery(
         "app.workers.tasks.recording_backfill_task",
         "app.workers.tasks.google_calendar_push_task",
         "app.workers.tasks.google_calendar_reconciliation_task",
+        "app.workers.tasks.whatsapp_push_task",
+        "app.workers.tasks.whatsapp_reconciliation_task",
     ],
 )
 

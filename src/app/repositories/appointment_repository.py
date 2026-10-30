@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 from beanie import PydanticObjectId
 
-from app.core.constants import AppointmentStatus, GoogleCalendarSyncStatus
+from app.core.constants import AppointmentStatus, GoogleCalendarSyncStatus, WhatsAppNotificationStatus
 from app.models.appointment import Appointment
 from app.schemas.common import PageParams
 
@@ -137,6 +137,15 @@ class AppointmentRepository:
         """
         return await Appointment.find(
             Appointment.google_calendar_sync_status == GoogleCalendarSyncStatus.pending,
+            Appointment.is_deleted == False,  # noqa: E712
+        ).to_list()
+
+    async def list_pending_whatsapp_notifications(self) -> list[Appointment]:
+        """Feeds workers/tasks/whatsapp_push_task.py's sweep — every Appointment still owed a
+        WhatsApp notification.
+        """
+        return await Appointment.find(
+            Appointment.whatsapp_notification_status == WhatsAppNotificationStatus.pending,
             Appointment.is_deleted == False,  # noqa: E712
         ).to_list()
 

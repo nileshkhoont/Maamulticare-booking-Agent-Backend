@@ -36,10 +36,11 @@ class EdesyPlaceCallRequest(BaseModel):
     # to the wrong (trial) number.
     fromNumber: str | None = None
     context: dict[str, Any] = {}
-    # Dashboard-level {{variable}} prompt substitution (Agent Instructions -> Variables). Field
-    # name "variables" is inferred from the dashboard's own terminology, not confirmed against
-    # real Edesy/Vani API docs — see prompts/call_variables.py's module docstring. `context` above
-    # is kept too since it was already being sent before this was added.
+    # Dashboard-level {variable} prompt substitution (Agent Instructions -> Variables). Field
+    # name confirmed correct against Edesy's own API docs (trigger-call) — but the PROMPT TEXT
+    # must reference these with single braces ({person_name}), not double ({{person_name}}); see
+    # prompts/call_variables.py's module docstring for the 2026-10-16 real-call confirmation.
+    # `context` above is kept too since it was already being sent before this was added.
     variables: dict[str, Any] = {}
     callbackUrl: str | None = None
     idempotencyKey: str | None = None

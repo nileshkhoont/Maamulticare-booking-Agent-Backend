@@ -3,7 +3,13 @@ from datetime import datetime
 import pymongo
 from beanie import Indexed
 
-from app.core.constants import AppointmentStatus, BookingSource, GoogleCalendarSyncStatus
+from app.core.constants import (
+    AppointmentStatus,
+    BookingSource,
+    GoogleCalendarSyncStatus,
+    WhatsAppNotificationStatus,
+    WhatsAppNotificationType,
+)
 from app.db.base import TimestampedDocument
 
 
@@ -32,6 +38,18 @@ class Appointment(TimestampedDocument):
     google_calendar_sync_error: str | None = None  # last push failure message, for admin visibility
     google_calendar_last_synced_at: datetime | None = None
 
+    # --- WhatsApp notification (one-way, outbound-only — see
+    # services/whatsapp_notification_service.py). Set once at creation/mutation time by
+    # appointment_service.py; `whatsapp_notification_type` never changes after that for a given
+    # row (reschedule/cancel both create or mutate a DIFFERENT row, never flip an existing row's
+    # already-assigned type).
+    whatsapp_notification_type: WhatsAppNotificationType | None = None
+    whatsapp_notification_status: WhatsAppNotificationStatus | None = None
+    whatsapp_message_id: str | None = None  # Meta's wamid — correlates inbound status webhooks
+    whatsapp_notification_error: str | None = None  # last send failure message, for admin visibility
+    whatsapp_notification_attempt_count: int = 0  # bounds the reconciliation sweep's retries
+    whatsapp_notification_last_event_at: datetime | None = None  # last send OR status-webhook update
+
     class Settings(TimestampedDocument.Settings):
         name = "appointments"
         indexes = [
@@ -48,4 +66,8 @@ class Appointment(TimestampedDocument):
             ),
             # Speeds up google_calendar_push_task's sweep query for pending/failed rows.
             pymongo.IndexModel([("google_calendar_sync_status", pymongo.ASCENDING)], sparse=True),
+            # Speeds up whatsapp_push_task's sweep query for pending/failed rows.
+            pymongo.IndexModel([("whatsapp_notification_status", pymongo.ASCENDING)], sparse=True),
+            # Speeds up the WhatsApp status webhook's lookup-by-message-id query.
+            pymongo.IndexModel([("whatsapp_message_id", pymongo.ASCENDING)], sparse=True),
         ]

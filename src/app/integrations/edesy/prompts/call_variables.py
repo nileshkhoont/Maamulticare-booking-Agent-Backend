@@ -1,10 +1,17 @@
 """Per-call template variables sent alongside `context` on outbound `place_call` requests, for
-Vani's dashboard-level `{{variable}}` prompt substitution (Agent editor -> Agent Instructions ->
-Variables). Whether Vani's real API field for this is named `variables` is inferred from the
-dashboard calling the feature "Variables" — not confirmed against real documentation, since none
-is available (see integrations/edesy/schemas.py's EdesyPlaceCallRequest docstring). Verify with a
-real outbound call once credits allow, by checking whether the agent actually speaks the caller's
-name/appointment details instead of a literal "{{person_name}}".
+Vani's dashboard-level prompt substitution (Agent editor -> Agent Instructions -> Variables). The
+`variables` field name is confirmed correct against Edesy's own API docs
+(edesy.in/docs/voice-agent/api/trigger-call).
+
+CONFIRMED LIVE 2026-10-16 (real call, schedule 6ad2089bcf8e52bc755d6926): the AGENT PROMPT TEXT
+must reference these with SINGLE curly braces (e.g. "{person_name}"), not double
+("{{person_name}}") — Edesy's docs example uses single braces, and a real call sent
+variables={"person_name": "Harsh", "previous_appointment_status": "upcoming", ...} correctly, but
+the agent greeted with a nameless, Step-1-style generic opener instead of using the name or
+routing into the "has an upcoming appointment" branch — i.e. the substitution silently failed
+because the prompt's placeholders were double-braced. This Python dict's own key names are
+unaffected (they're plain dict keys, read by Edesy regardless of brace style) — only the Agent
+Instructions prompt TEXT in Edesy's dashboard needed the brace fix.
 
 The upcoming/expired decision is computed here, in UTC-aware Python, rather than left to the LLM —
 language models have no reliable notion of "today's date" mid-conversation, so doing date math in

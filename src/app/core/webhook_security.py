@@ -41,3 +41,23 @@ def verify_edesy_signature(raw_body: bytes, signature_header: str | None) -> boo
         candidate = candidate.split("=", 1)[1]
 
     return hmac.compare_digest(expected, candidate)
+
+
+def verify_meta_signature(raw_body: bytes, signature_header: str | None) -> bool:
+    """Verifies Meta's `X-Hub-Signature-256` header on every WhatsApp webhook delivery — the
+    documented mechanism (HMAC-SHA256 over the raw request body, keyed with the App Secret,
+    `sha256=<hex>` prefixed). Same shape as verify_edesy_signature above, just keyed with a
+    different secret.
+    """
+    if not signature_header or not settings.meta_whatsapp_app_secret:
+        return False
+
+    expected = hmac.new(
+        settings.meta_whatsapp_app_secret.encode("utf-8"), raw_body, hashlib.sha256
+    ).hexdigest()
+
+    candidate = signature_header.strip()
+    if "=" in candidate:
+        candidate = candidate.split("=", 1)[1]
+
+    return hmac.compare_digest(expected, candidate)

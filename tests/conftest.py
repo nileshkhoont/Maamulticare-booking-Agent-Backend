@@ -7,6 +7,10 @@ os.environ.setdefault("AGENT_TOOL_SECRET", "test-tool-secret")
 os.environ.setdefault("EDESY_WEBHOOK_SECRET", "test-webhook-secret")
 os.environ.setdefault("GOOGLE_SERVICE_ACCOUNT_JSON", "")
 os.environ.setdefault("GOOGLE_CALENDAR_ID", "test-calendar-id@group.calendar.google.com")
+os.environ.setdefault("META_WHATSAPP_ACCESS_TOKEN", "test-whatsapp-token")
+os.environ.setdefault("META_WHATSAPP_PHONE_NUMBER_ID", "test-phone-number-id")
+os.environ.setdefault("META_WHATSAPP_APP_SECRET", "test-whatsapp-app-secret")
+os.environ.setdefault("META_WHATSAPP_WEBHOOK_VERIFY_TOKEN", "test-whatsapp-verify-token")
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient

@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta
 
+from beanie.operators import Set
+
 from app.core.constants import CallOutcome, CallScheduleStatus, CallStatus, CallType, Direction
 from app.core.exceptions import EdesyIntegrationError
 from app.core.logging import get_logger
@@ -247,8 +249,12 @@ class CallService:
             )
 
         if appointment:
-            appointment.created_by_call_id = str(call.id)
-            await appointment.save()
+            # $set-only update (not .save()) — this backfill runs moments after booking, the
+            # exact window a concurrent push-task sweep (Google Calendar or WhatsApp) may be
+            # mid-write on this same row; .save() would silently clobber those fields back to
+            # this process's stale snapshot. See whatsapp_notification_service.py's module
+            # docstring for the race this avoids.
+            await appointment.update(Set({Appointment.created_by_call_id: str(call.id)}))
             logger.info(
                 "appointment_linked_to_call", appointment_id=str(appointment.id), call_id=str(call.id)
             )

@@ -12,10 +12,22 @@ reschedule_existing already creates a brand-new Appointment row (status=reschedu
 independently cancels the old one (status=cancelled) as two separate rows — each just goes
 through this same generic pending-sync queue on its own: the old row's cancel deletes its Google
 event, the new row's create makes a fresh one.
+
+Every write here uses Beanie's atomic `Set` operator (a MongoDB `$set` touching only the named
+fields) instead of `appointment.save()`. `save()` writes EVERY field from this process's in-memory
+copy of the document — including whatsapp_notification_status/whatsapp_message_id, which
+whatsapp_notification_service.py independently reads/writes on its OWN in-memory copy of the SAME
+row at roughly the same time (both are poll-based sweeps that pick up a freshly-booked appointment
+within the same ~30s window). Two `save()` calls racing like that is a classic lost-update:
+whichever saves last silently overwrites the other's fields back to its own stale snapshot —
+root-caused 2026-10-15 from a real WhatsApp double-send caused by exactly this race. `Set`
+sidesteps it entirely: it only ever touches the fields named in this file.
 """
 
 from datetime import timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from beanie.operators import Set
 
 from app.core.config import settings
 from app.core.constants import AppointmentStatus, GoogleCalendarSyncStatus
@@ -68,24 +80,35 @@ class GoogleCalendarSyncService:
             else:
                 await self._push_booking(appointment)
         except GoogleCalendarIntegrationError as exc:
-            appointment.google_calendar_sync_status = GoogleCalendarSyncStatus.failed
-            appointment.google_calendar_sync_error = str(exc)
-            await appointment.save()
+            await appointment.update(
+                Set(
+                    {
+                        Appointment.google_calendar_sync_status: GoogleCalendarSyncStatus.failed,
+                        Appointment.google_calendar_sync_error: str(exc),
+                    }
+                )
+            )
             logger.error("google_calendar_push_failed", appointment_id=str(appointment.id), error=str(exc))
 
     async def _push_cancellation(self, appointment: Appointment) -> None:
         if appointment.google_calendar_event_id is None:
             # Never actually reached Google Calendar (push never completed, or a legacy
             # pre-integration row) — nothing to delete there.
-            appointment.google_calendar_sync_status = GoogleCalendarSyncStatus.not_applicable
-            await appointment.save()
+            await appointment.update(
+                Set({Appointment.google_calendar_sync_status: GoogleCalendarSyncStatus.not_applicable})
+            )
             return
 
         await google_calendar_client.delete_event(appointment.google_calendar_event_id)
-        appointment.google_calendar_sync_status = GoogleCalendarSyncStatus.synced
-        appointment.google_calendar_sync_error = None
-        appointment.google_calendar_last_synced_at = utcnow()
-        await appointment.save()
+        await appointment.update(
+            Set(
+                {
+                    Appointment.google_calendar_sync_status: GoogleCalendarSyncStatus.synced,
+                    Appointment.google_calendar_sync_error: None,
+                    Appointment.google_calendar_last_synced_at: utcnow(),
+                }
+            )
+        )
         logger.info(
             "google_calendar_event_deleted",
             appointment_id=str(appointment.id),
@@ -95,8 +118,7 @@ class GoogleCalendarSyncService:
     async def _push_booking(self, appointment: Appointment) -> None:
         if appointment.google_calendar_event_id is not None:
             # Already pushed on an earlier tick (e.g. this row was re-queued) — don't double-create.
-            appointment.google_calendar_sync_status = GoogleCalendarSyncStatus.synced
-            await appointment.save()
+            await appointment.update(Set({Appointment.google_calendar_sync_status: GoogleCalendarSyncStatus.synced}))
             return
         if not settings.google_calendar_id:
             raise GoogleCalendarIntegrationError("GOOGLE_CALENDAR_ID is not configured")
@@ -107,8 +129,7 @@ class GoogleCalendarSyncService:
                 f"Person {appointment.person_id} not found for Google Calendar push"
             )
 
-        appointment.google_calendar_sync_status = GoogleCalendarSyncStatus.syncing
-        await appointment.save()
+        await appointment.update(Set({Appointment.google_calendar_sync_status: GoogleCalendarSyncStatus.syncing}))
 
         timezone = await self._resolve_timezone()
         start_utc = ensure_utc(appointment.appointment_datetime)
@@ -127,11 +148,16 @@ class GoogleCalendarSyncService:
             end=self._build_event_datetime(end_utc, timezone),
         )
         created = await google_calendar_client.create_event(event)
-        appointment.google_calendar_event_id = created.id
-        appointment.google_calendar_sync_status = GoogleCalendarSyncStatus.synced
-        appointment.google_calendar_sync_error = None
-        appointment.google_calendar_last_synced_at = utcnow()
-        await appointment.save()
+        await appointment.update(
+            Set(
+                {
+                    Appointment.google_calendar_event_id: created.id,
+                    Appointment.google_calendar_sync_status: GoogleCalendarSyncStatus.synced,
+                    Appointment.google_calendar_sync_error: None,
+                    Appointment.google_calendar_last_synced_at: utcnow(),
+                }
+            )
+        )
         logger.info(
             "google_calendar_event_created", appointment_id=str(appointment.id), event_id=created.id
         )

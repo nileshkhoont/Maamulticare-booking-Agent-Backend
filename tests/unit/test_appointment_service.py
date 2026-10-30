@@ -33,6 +33,9 @@ async def test_book_first_time_success(business_config: BusinessConfig):
     # Every new row is queued for the Google Calendar push sweep — see
     # google_calendar_sync_service.py.
     assert appointment.google_calendar_sync_status == "pending"
+    # ...and for the WhatsApp push sweep — see whatsapp_notification_service.py.
+    assert appointment.whatsapp_notification_type == "booked"
+    assert appointment.whatsapp_notification_status == "pending"
 
 
 @pytest.mark.asyncio
@@ -67,6 +70,9 @@ async def test_reschedule_frees_original_slot(business_config: BusinessConfig):
     assert rescheduled.status == AppointmentStatus.rescheduled
     assert rescheduled.original_appointment_id == str(original.id)
     assert rescheduled.google_calendar_sync_status == "pending"
+    # The new row gets exactly one WhatsApp notification queued — "rescheduled".
+    assert rescheduled.whatsapp_notification_type == "rescheduled"
+    assert rescheduled.whatsapp_notification_status == "pending"
 
     # The original slot should be free again — someone else can now book it.
     reclaimed = await appointment_service.book_first_time(
@@ -93,6 +99,39 @@ async def test_reschedule_queues_old_row_for_google_calendar_deletion(business_c
     old_refreshed = await Appointment.get(original.id)
     assert old_refreshed.status == AppointmentStatus.cancelled
     assert old_refreshed.google_calendar_sync_status == "pending"
+    # The old row's own (still-pending, never-sent) "booked" notification is dropped rather than
+    # left queued — otherwise the push sweep would later send a stale confirmation for a slot
+    # that no longer exists. Only the new (rescheduled) row gets a fresh notification queued, so
+    # the patient gets exactly one message, not also a confusing second one.
+    assert old_refreshed.whatsapp_notification_status is None
+
+
+@pytest.mark.asyncio
+async def test_reschedule_leaves_already_sent_whatsapp_notification_alone(business_config: BusinessConfig):
+    """Unlike the still-pending case above, a notification that already reached the patient
+    (or is being sent right now) must not be touched — there's nothing to take back, and
+    overwriting an in-flight send's bookkeeping would race with the push sweep.
+    """
+    original_slot = _next_monday_9am()
+    new_slot = original_slot + timedelta(minutes=30)
+    person_id = await _make_person("+15550000006b")
+
+    original = await appointment_service.book_first_time(
+        person_id=person_id, appointment_datetime=original_slot, booking_source=BookingSource.inbound_call
+    )
+    original.whatsapp_notification_status = "sent"
+    original.whatsapp_message_id = "wamid.ALREADY-SENT-2"
+    await original.save()
+
+    await appointment_service.reschedule_existing(
+        appointment_id=str(original.id), new_appointment_datetime=new_slot
+    )
+
+    from app.models.appointment import Appointment
+
+    old_refreshed = await Appointment.get(original.id)
+    assert old_refreshed.whatsapp_notification_status == "sent"
+    assert old_refreshed.whatsapp_message_id == "wamid.ALREADY-SENT-2"
 
 
 @pytest.mark.asyncio
@@ -119,9 +158,11 @@ async def test_reschedule_rolls_back_old_rows_sync_status_on_slot_conflict(busin
     original = await appointment_service.book_first_time(
         person_id=person1_id, appointment_datetime=slot_a, booking_source=BookingSource.inbound_call
     )
-    # Simulate the push sweep having already run and successfully synced this appointment.
+    # Simulate the push sweep having already run and successfully synced/sent this appointment.
     original.google_calendar_sync_status = "synced"
     original.google_calendar_event_id = str(original.id)
+    original.whatsapp_notification_status = "sent"
+    original.whatsapp_message_id = "wamid.ALREADY-SENT"
     await original.save()
 
     # Someone else already holds slot_b.
@@ -142,6 +183,10 @@ async def test_reschedule_rolls_back_old_rows_sync_status_on_slot_conflict(busin
     # incorrectly queue a Google Calendar event deletion for an appointment that's actually
     # still active.
     assert rolled_back.google_calendar_sync_status == "synced"
+    # Same rollback guarantee for WhatsApp — it was already "sent", so the failed reschedule
+    # attempt must not have reset or re-queued it.
+    assert rolled_back.whatsapp_notification_status == "sent"
+    assert rolled_back.whatsapp_message_id == "wamid.ALREADY-SENT"
 
 
 @pytest.mark.asyncio
@@ -155,3 +200,5 @@ async def test_cancel_queues_google_calendar_deletion(business_config: BusinessC
     cancelled = await appointment_service.cancel(str(appointment.id), reason="Patient request")
     assert cancelled.status == AppointmentStatus.cancelled
     assert cancelled.google_calendar_sync_status == "pending"
+    assert cancelled.whatsapp_notification_type == "cancelled"
+    assert cancelled.whatsapp_notification_status == "pending"
