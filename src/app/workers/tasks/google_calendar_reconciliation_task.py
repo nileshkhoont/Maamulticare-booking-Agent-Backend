@@ -9,6 +9,8 @@ two-way sync, since Google Calendar is never read back into this system.
 import asyncio
 from datetime import UTC, datetime, timedelta
 
+from beanie.operators import Set
+
 from app.core.constants import GoogleCalendarSyncStatus
 from app.core.logging import get_logger
 from app.db.mongodb import close_db, connect_db
@@ -35,8 +37,10 @@ async def reconcile_google_calendar_once() -> int:
         Appointment.is_deleted == False,  # noqa: E712
     ).to_list()
     for appointment in [*failed, *stuck_syncing]:
-        appointment.google_calendar_sync_status = GoogleCalendarSyncStatus.pending
-        await appointment.save()
+        # $set-only update (not .save()) — never overwrite fields another concurrent sweep
+        # (e.g. whatsapp_push_task) may be mid-write on this same row. See
+        # google_calendar_sync_service.py's module docstring for the race this avoids.
+        await appointment.update(Set({Appointment.google_calendar_sync_status: GoogleCalendarSyncStatus.pending}))
         logger.info("google_calendar_sync_unstuck", appointment_id=str(appointment.id))
     return len(failed) + len(stuck_syncing)
 

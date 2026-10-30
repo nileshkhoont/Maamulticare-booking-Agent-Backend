@@ -48,6 +48,11 @@ class GoogleCalendarIntegrationError(AppError):
     default_message = "Google Calendar API request failed"
 
 
+class WhatsAppIntegrationError(AppError):
+    status_code = status.HTTP_502_BAD_GATEWAY
+    default_message = "WhatsApp API request failed"
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:

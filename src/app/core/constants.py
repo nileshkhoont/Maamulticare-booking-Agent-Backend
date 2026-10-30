@@ -37,6 +37,37 @@ class GoogleCalendarSyncStatus(str, Enum):
     not_applicable = "not_applicable"  # nothing to push (e.g. cancelled before ever reaching Google Calendar)
 
 
+class WhatsAppNotificationType(str, Enum):
+    """Which patient-facing WhatsApp template an Appointment row is queued to send — set once, at
+    the exact moment appointment_service.py creates/mutates the row, never inferred later. See
+    services/whatsapp_notification_service.py.
+    """
+
+    booked = "booked"
+    rescheduled = "rescheduled"
+    cancelled = "cancelled"
+
+
+class WhatsAppNotificationStatus(str, Enum):
+    """Queue state for sending an app-initiated Appointment's WhatsApp confirmation — consumed by
+    workers/tasks/whatsapp_push_task.py's sweep, not by the admin-facing book/reschedule/cancel
+    request itself. `sent`/`delivered`/`read` are populated opportunistically from Meta's own
+    status webhook (see api/v1/endpoints/webhooks.py) — `sent` is set immediately after our own
+    send call succeeds either way. Unlike GoogleCalendarSyncStatus, `failed` is not retried
+    forever — see Appointment.whatsapp_notification_attempt_count and
+    workers/tasks/whatsapp_reconciliation_task.py's MAX_WHATSAPP_SEND_ATTEMPTS, since a WhatsApp
+    send failure is far more often permanent (invalid number, rejected template, outside
+    messaging policy) than Google Calendar's typically-transient config errors.
+    """
+
+    pending = "pending"  # needs a send
+    sending = "sending"  # claimed by a sweep tick, send in flight
+    sent = "sent"  # our send call succeeded (Meta accepted the message)
+    delivered = "delivered"  # Meta's status webhook confirmed delivery to the device
+    read = "read"  # Meta's status webhook confirmed the patient read it
+    failed = "failed"  # last send attempt errored — see Appointment.whatsapp_notification_error
+
+
 class CallType(str, Enum):
     inbound = "inbound"
     outbound_admin_scheduled = "outbound_admin_scheduled"

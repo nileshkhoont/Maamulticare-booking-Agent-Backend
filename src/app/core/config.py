@@ -104,5 +104,59 @@ class Settings(BaseSettings):
     # external integration synchronously from an admin-facing request.
     google_calendar_push_poll_interval_seconds: int = 30
 
+    # Meta WhatsApp Business Platform — a second, independent one-way OUTBOUND notification
+    # channel: patients get an automatic WhatsApp message on book/reschedule/cancel (see
+    # services/whatsapp_notification_service.py). Separate concern from Google Calendar above
+    # (that one's for the doctor's own visibility; this one messages the patient themselves) but
+    # the same architecture — poll-based via Celery, never fired inline. Inbound replies from
+    # patients are acknowledged (200) and logged, never acted on — this is not a chatbot.
+    #
+    # Setup: create/use a Meta Business Portfolio at business.facebook.com -> create an App at
+    # developers.facebook.com/apps, add the WhatsApp product -> WhatsApp > API Setup gives the
+    # phone number ID -> Business Settings > Users > System Users: create one, assign the WhatsApp
+    # Business Account with Full Control, generate a non-expiring token with
+    # whatsapp_business_messaging + whatsapp_business_management permissions -> App Dashboard >
+    # Settings > Basic has the App Secret -> WhatsApp > Configuration > Webhook: set the callback
+    # URL to <public_base_url>/api/v1/webhooks/whatsapp and a verify token of your own choosing,
+    # then subscribe to the "messages" field -> create 3 Utility-category message templates
+    # (appointment_booked_v1, appointment_rescheduled_v1, appointment_cancelled_v1) in WhatsApp
+    # Manager and wait for APPROVED status.
+    meta_whatsapp_access_token: str | None = None
+    meta_whatsapp_phone_number_id: str | None = None
+    # Verifies the X-Hub-Signature-256 header on every inbound webhook POST (see
+    # core/webhook_security.py::verify_meta_signature) — never trust an unsigned/mis-signed
+    # delivery, since this endpoint is public and unauthenticated by design (Meta has no
+    # concept of a bearer token for webhook delivery).
+    meta_whatsapp_app_secret: str | None = None
+    # A string YOU choose (not issued by Meta) — entered in both this setting and in the
+    # Dashboard's webhook config, compared verbatim during the one-time GET verification
+    # handshake. Not a secret in the cryptographic sense (it's only ever used over a GET query
+    # param during setup), but still worth keeping unguessable.
+    meta_whatsapp_webhook_verify_token: str | None = None
+    # Must exactly match the language the 3 templates above were approved in.
+    meta_whatsapp_template_language_code: str = "en_US"
+    # Kill switch — set false to pause all outbound WhatsApp sends without a redeploy. The push
+    # sweep just logs a warning and does nothing while this is false, same early-exit shape as
+    # Google Calendar's push task when GOOGLE_CALENDAR_ID is unset.
+    meta_whatsapp_notifications_enabled: bool = True
+    # How often workers/tasks/whatsapp_push_task.py's sweep looks for Appointments with
+    # whatsapp_notification_status=pending to send.
+    meta_whatsapp_push_poll_interval_seconds: int = 30
+
+    @property
+    def meta_whatsapp_configured(self) -> bool:
+        """True once WhatsApp notifications are both enabled and have the two settings the push
+        sweep actually needs to send anything (see workers/tasks/whatsapp_push_task.py's own
+        early-exit guard, which checks the same thing). Used by appointment_service.py to decide
+        whether to queue a pending notification at all — deliberately NOT queuing one while this
+        is false means no backlog accumulates during an unconfigured window, so there's nothing
+        to send a flood of stale confirmations for once you do configure it.
+        """
+        return bool(
+            self.meta_whatsapp_notifications_enabled
+            and self.meta_whatsapp_access_token
+            and self.meta_whatsapp_phone_number_id
+        )
+
 
 settings = Settings()

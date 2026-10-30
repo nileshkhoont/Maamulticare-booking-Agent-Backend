@@ -27,4 +27,12 @@ celery_app.conf.beat_schedule = {
         "task": "app.workers.tasks.google_calendar_reconciliation_task.reconcile_google_calendar",
         "schedule": 600.0,  # every 10 minutes — mirrors the stuck-schedule sweep's cadence
     },
+    "push-pending-whatsapp-notifications": {
+        "task": "app.workers.tasks.whatsapp_push_task.push_pending_whatsapp_notifications",
+        "schedule": settings.meta_whatsapp_push_poll_interval_seconds,
+    },
+    "reconcile-whatsapp-notifications": {
+        "task": "app.workers.tasks.whatsapp_reconciliation_task.reconcile_whatsapp_notifications",
+        "schedule": 600.0,  # every 10 minutes — mirrors Google Calendar's reconciliation cadence
+    },
 }
