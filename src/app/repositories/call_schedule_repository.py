@@ -1,6 +1,7 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
-from beanie import PydanticObjectId
+from beanie import PydanticObjectId, UpdateResponse
+from beanie.operators import Set
 
 from app.core.constants import CallPurpose, CallScheduleStatus
 from app.models.call_schedule import CallSchedule
@@ -41,12 +42,46 @@ class CallScheduleRepository:
             .to_list()
         )
 
+    async def claim_for_dispatch(self, schedule_id: PydanticObjectId) -> CallSchedule | None:
+        """Atomically flips ONE schedule pending -> in_progress and stamps dispatched_at, returning
+        the claimed row — or None if it's no longer pending (another worker/tick already claimed
+        it, or an admin cancelled it in the meantime). A single find_one_and_update, so two
+        overlapping dispatch ticks can never both claim — and both place — the same call.
+        """
+        return await CallSchedule.find_one(
+            CallSchedule.id == schedule_id,
+            CallSchedule.status == CallScheduleStatus.pending,
+            CallSchedule.is_deleted == False,  # noqa: E712
+        ).update(
+            Set({CallSchedule.status: CallScheduleStatus.in_progress, CallSchedule.dispatched_at: datetime.now(UTC)}),
+            response_type=UpdateResponse.NEW_DOCUMENT,
+        )
+
     async def list_stuck_in_progress(self, older_than: datetime) -> list[CallSchedule]:
+        """in_progress rows dispatched before `older_than`. Rows dispatched before dispatched_at
+        existed (still in_progress at deploy time) have none, so only those fall back to the old
+        updated_at comparison — nothing is left stuck forever across the upgrade.
+        """
         return await CallSchedule.find(
             CallSchedule.status == CallScheduleStatus.in_progress,
-            CallSchedule.updated_at <= older_than,
             CallSchedule.is_deleted == False,  # noqa: E712
+            {
+                "$or": [
+                    {"dispatched_at": {"$lte": older_than}},
+                    {"dispatched_at": None, "updated_at": {"$lte": older_than}},
+                ]
+            },
         ).to_list()
+
+    async def mark_missed_if_still_in_progress(self, schedule: CallSchedule) -> bool:
+        """Conditional write for the stuck sweep: only flips the row if it is STILL in_progress, so
+        a call.ended webhook that landed after the sweep read the row is never overwritten.
+        """
+        result = await CallSchedule.find_one(
+            CallSchedule.id == schedule.id,
+            CallSchedule.status == CallScheduleStatus.in_progress,
+        ).update(Set({CallSchedule.status: CallScheduleStatus.missed}))
+        return result.modified_count == 1
 
     async def list_filtered(
         self,

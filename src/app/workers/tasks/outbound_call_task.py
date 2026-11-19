@@ -1,11 +1,14 @@
 """Picks up due call_schedules entries and places the call via Edesy. `place_call` is not
 idempotent on Edesy's side, so `call_schedules._id` is passed as the idempotency key
-(folder-structure doc's cross-cutting practices table), and a schedule is flipped out of
-"pending" before dispatch so the same due entry is never picked up twice by overlapping polls.
+(folder-structure doc's cross-cutting practices table), and a schedule is claimed out of
+"pending" with one atomic find_one_and_update before dispatch, so the same due entry is never
+picked up twice by overlapping polls.
 """
 
 import asyncio
 from datetime import UTC, datetime
+
+from beanie.operators import Set
 
 from app.core.config import settings
 from app.core.constants import CallScheduleStatus
@@ -14,6 +17,7 @@ from app.core.logging import get_logger
 from app.db.mongodb import close_db, connect_db
 from app.integrations.edesy.client import edesy_client
 from app.integrations.edesy.prompts import build_call_variables, render_admin_instructions_context
+from app.models.call_schedule import CallSchedule
 from app.models.person import Person
 from app.repositories.appointment_repository import appointment_repository
 from app.repositories.call_schedule_repository import call_schedule_repository
@@ -44,17 +48,23 @@ async def dispatch_due_calls_once() -> int:
 
     dispatched = 0
     due = await call_schedule_repository.list_due(datetime.now(UTC))
-    for schedule in due:
+    for candidate in due:
+        # Atomic pending -> in_progress claim (also stamps dispatched_at). If it returns None,
+        # another overlapping tick already claimed this row, or an admin cancelled it since
+        # list_due read it — either way, it must not be placed by this tick.
+        schedule = await call_schedule_repository.claim_for_dispatch(candidate.id)
+        if schedule is None:
+            logger.info("outbound_call_already_claimed", schedule_id=str(candidate.id))
+            continue
+
+        # Every write below is a $set of only the field it changes (never schedule.save()): the
+        # call.ended webhook (services/call_service.py) can finalize this same row at any moment
+        # once the call is placed, and a full-document save would overwrite its result.
         person = await Person.get(schedule.person_id)
         if person is None or person.is_deleted:
             logger.error("outbound_call_person_missing", schedule_id=str(schedule.id))
-            schedule.status = CallScheduleStatus.cancelled
-            await schedule.save()
+            await schedule.update(Set({CallSchedule.status: CallScheduleStatus.cancelled}))
             continue
-
-        # Flip status before dispatching so a concurrent poll can't double-place this call.
-        schedule.status = CallScheduleStatus.in_progress
-        await schedule.save()
 
         context = {
             "call_schedule_id": str(schedule.id),
@@ -81,20 +91,18 @@ async def dispatch_due_calls_once() -> int:
                 variables=variables,
                 idempotency_key=str(schedule.id),
             )
-            schedule.edesy_call_id = result.call_id
-            await schedule.save()
+            await schedule.update(Set({CallSchedule.edesy_call_id: result.call_id}))
             dispatched += 1
             logger.info("outbound_call_dispatched", schedule_id=str(schedule.id), edesy_call_id=result.call_id)
         except EdesyIntegrationError as exc:
             # No retry on a dispatch failure either — mark it missed and move on rather than
             # looping. An admin has to schedule a new call if this needs to happen again.
-            schedule.status = CallScheduleStatus.missed
             logger.error(
                 "outbound_call_dispatch_failed",
                 schedule_id=str(schedule.id),
                 error=str(exc),
             )
-            await schedule.save()
+            await schedule.update(Set({CallSchedule.status: CallScheduleStatus.missed}))
     return dispatched
 
 

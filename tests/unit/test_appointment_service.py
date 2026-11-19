@@ -178,7 +178,9 @@ async def test_reschedule_rolls_back_old_rows_sync_status_on_slot_conflict(busin
             )
 
     rolled_back = await Appointment.get(original.id)
-    assert rolled_back.status == AppointmentStatus.rescheduled
+    # Untouched: still exactly the "booked" appointment it was before the failed attempt. (This
+    # used to assert "rescheduled" — the wrong status the old rollback always restored.)
+    assert rolled_back.status == AppointmentStatus.booked
     # Rolled back to "synced" (its real pre-attempt value) — NOT left at "pending", which would
     # incorrectly queue a Google Calendar event deletion for an appointment that's actually
     # still active.

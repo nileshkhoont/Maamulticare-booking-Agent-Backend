@@ -37,6 +37,11 @@ class Appointment(TimestampedDocument):
     google_calendar_sync_status: GoogleCalendarSyncStatus | None = None
     google_calendar_sync_error: str | None = None  # last push failure message, for admin visibility
     google_calendar_last_synced_at: datetime | None = None
+    # When the push sweep claimed this row (pending -> syncing). The reconciliation sweep's
+    # "stuck syncing" check measures from THIS, never from updated_at (which is only set at
+    # creation) — otherwise any appointment older than the threshold looked stuck the instant a
+    # push started, and got reset and pushed a second time while the first was still in flight.
+    google_calendar_sync_started_at: datetime | None = None
 
     # --- WhatsApp notification (one-way, outbound-only — see
     # services/whatsapp_notification_service.py). Set once at creation/mutation time by
@@ -49,6 +54,11 @@ class Appointment(TimestampedDocument):
     whatsapp_notification_error: str | None = None  # last send failure message, for admin visibility
     whatsapp_notification_attempt_count: int = 0  # bounds the reconciliation sweep's retries
     whatsapp_notification_last_event_at: datetime | None = None  # last send OR status-webhook update
+    # When the push sweep claimed this row (pending -> sending) — same reasoning as
+    # google_calendar_sync_started_at above. Also identifies WHICH claim a send result belongs
+    # to: the send's own success/failure write only applies if the row is still in that exact
+    # claim, so a cancel that re-queues the row mid-send is never overwritten.
+    whatsapp_send_started_at: datetime | None = None
 
     class Settings(TimestampedDocument.Settings):
         name = "appointments"

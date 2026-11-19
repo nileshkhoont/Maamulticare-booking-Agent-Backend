@@ -31,18 +31,45 @@ async def reconcile_google_calendar_once() -> int:
         Appointment.google_calendar_sync_status == GoogleCalendarSyncStatus.failed,
         Appointment.is_deleted == False,  # noqa: E712
     ).to_list()
+    # "Stuck" is measured from when the push actually started (google_calendar_sync_started_at),
+    # never from updated_at — updated_at is only set at creation, so any appointment older than
+    # the threshold used to look stuck the instant a push began, and got pushed a second time
+    # while the first was still in flight. Rows already syncing at deploy time have no start
+    # stamp, so only those fall back to the old updated_at comparison.
     stuck_syncing = await Appointment.find(
         Appointment.google_calendar_sync_status == GoogleCalendarSyncStatus.syncing,
-        Appointment.updated_at < cutoff,
         Appointment.is_deleted == False,  # noqa: E712
+        {
+            "$or": [
+                {"google_calendar_sync_started_at": {"$lt": cutoff}},
+                {"google_calendar_sync_started_at": None, "updated_at": {"$lt": cutoff}},
+            ]
+        },
     ).to_list()
-    for appointment in [*failed, *stuck_syncing]:
-        # $set-only update (not .save()) — never overwrite fields another concurrent sweep
-        # (e.g. whatsapp_push_task) may be mid-write on this same row. See
-        # google_calendar_sync_service.py's module docstring for the race this avoids.
-        await appointment.update(Set({Appointment.google_calendar_sync_status: GoogleCalendarSyncStatus.pending}))
-        logger.info("google_calendar_sync_unstuck", appointment_id=str(appointment.id))
-    return len(failed) + len(stuck_syncing)
+
+    reset = 0
+    for appointment in failed:
+        reset += await _reset_to_pending(appointment, Appointment.google_calendar_sync_status == GoogleCalendarSyncStatus.failed)
+    for appointment in stuck_syncing:
+        reset += await _reset_to_pending(
+            appointment,
+            Appointment.google_calendar_sync_status == GoogleCalendarSyncStatus.syncing,
+            Appointment.google_calendar_sync_started_at == appointment.google_calendar_sync_started_at,
+        )
+    return reset
+
+
+async def _reset_to_pending(appointment: Appointment, *still_in_state) -> int:
+    """Conditional $set: only resets the row if it is STILL in the state this sweep read it in, so a
+    push that finished (or was re-claimed) after the read is never knocked back to pending.
+    """
+    result = await Appointment.find_one(Appointment.id == appointment.id, *still_in_state).update(
+        Set({Appointment.google_calendar_sync_status: GoogleCalendarSyncStatus.pending})
+    )
+    if result.modified_count == 0:
+        return 0
+    logger.info("google_calendar_sync_unstuck", appointment_id=str(appointment.id))
+    return 1
 
 
 async def _reconcile_google_calendar() -> int:

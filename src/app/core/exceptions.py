@@ -28,6 +28,24 @@ class DuplicateBookingError(AppError):
     default_message = "An active appointment already exists for this slot"
 
 
+class AppointmentNotActiveError(AppError):
+    """The appointment exists but is no longer active (booked/rescheduled) — e.g. already
+    cancelled — so the requested change would only duplicate or overwrite its history.
+    """
+
+    status_code = status.HTTP_409_CONFLICT
+    default_message = "Appointment is no longer active"
+
+
+class ScheduleNotPendingError(AppError):
+    """A scheduled call can only be cancelled before it is placed — this one is already ringing,
+    finished, or cancelled.
+    """
+
+    status_code = status.HTTP_409_CONFLICT
+    default_message = "This call can no longer be cancelled"
+
+
 class OutsideBusinessHoursError(AppError):
     status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
     default_message = "Requested time is outside business working hours/days"

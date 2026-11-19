@@ -17,8 +17,8 @@ from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, BeforeValidator
 
-from app.core.constants import BookingSource
-from app.core.exceptions import AppError
+from app.core.constants import AppointmentStatus, BookingSource
+from app.core.exceptions import AppError, AppointmentNotActiveError
 from app.core.logging import get_logger
 from app.core.tool_auth import require_tool_secret
 from app.models.appointment import Appointment
@@ -190,6 +190,21 @@ async def _resolve_appointment_id_or_disambiguate(
 
     if requested_appointment_id and PydanticObjectId.is_valid(requested_appointment_id):
         if expected_appointment_datetime is None:
+            # Same ownership rule the expected_appointment_datetime branch below enforces: an id
+            # belonging to a DIFFERENT person is never acted on. This shortcut used to pass the
+            # LLM's id straight through whenever the caller had 0-1 upcoming appointments, so an
+            # id from anywhere else could cancel/reschedule someone else's appointment.
+            requested = await appointment_service.get_by_id(requested_appointment_id)
+            if requested is not None and requested.person_id != str(person.id):
+                logger.warning(
+                    "agent_tool_appointment_owner_mismatch",
+                    action=action,
+                    appointment_id=requested_appointment_id,
+                    caller_person_id=str(person.id),
+                )
+                return None, ToolResponse(
+                    success=False, message=f"No active appointment found to {action}"
+                )
             if len(upcoming) > 1:
                 return None, ToolResponse(
                     success=False,
@@ -505,6 +520,23 @@ async def cancel_appointment(payload: CancelAppointmentRequest) -> ToolResponse:
 
     try:
         appointment = await appointment_service.cancel(appointment_id, reason=payload.reason)
+    except AppointmentNotActiveError as exc:
+        # Asked to cancel an appointment that is ALREADY cancelled (e.g. the agent repeats the
+        # call): nothing is changed or re-sent, but the agent gets the same success reply it
+        # always has — the caller's appointment is cancelled either way.
+        existing = await appointment_service.get_by_id(appointment_id)
+        if existing is None or existing.status != AppointmentStatus.cancelled:
+            return ToolResponse(success=False, message=exc.message)
+        return ToolResponse(
+            success=True,
+            message="This appointment was already cancelled — nothing was changed.",
+            data={
+                "appointment_id": str(existing.id),
+                "appointment_datetime": existing.appointment_datetime.isoformat(),
+                "appointment_datetime_ist": format_ist_human(existing.appointment_datetime),
+                "status": existing.status.value,
+            },
+        )
     except AppError as exc:
         return ToolResponse(success=False, message=exc.message)
 
