@@ -20,6 +20,11 @@ class CallSchedule(TimestampedDocument):
     status: CallScheduleStatus = CallScheduleStatus.pending
     created_by: str | None = None  # ref admins._id, null if system/agent-generated
     edesy_call_id: str | None = None  # set once outbound_call_task places the call with Edesy
+    # When outbound_call_task claimed this row (pending -> in_progress). The stuck-schedule sweep
+    # measures "in progress too long" from THIS, not from updated_at — updated_at is only ever set
+    # at creation (nothing bumps it on save), so a call scheduled hours ahead looked "stuck" the
+    # moment it was dispatched and got swept to missed while the patient was still on the line.
+    dispatched_at: datetime | None = None
 
     class Settings(TimestampedDocument.Settings):
         name = "call_schedules"

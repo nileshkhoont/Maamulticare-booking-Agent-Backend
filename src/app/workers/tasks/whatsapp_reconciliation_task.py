@@ -37,18 +37,47 @@ async def reconcile_whatsapp_notifications_once() -> int:
         Appointment.whatsapp_notification_attempt_count < MAX_WHATSAPP_SEND_ATTEMPTS,
         Appointment.is_deleted == False,  # noqa: E712
     ).to_list()
+    # "Stuck" is measured from when the send actually started (whatsapp_send_started_at), never
+    # from updated_at — updated_at is only set at creation, so any appointment older than the
+    # threshold used to look stuck the instant a send began, and got sent a second time while
+    # the first was still in flight. Rows already sending at deploy time have no start stamp, so
+    # only those fall back to the old updated_at comparison.
     stuck_sending = await Appointment.find(
         Appointment.whatsapp_notification_status == WhatsAppNotificationStatus.sending,
-        Appointment.updated_at < cutoff,
         Appointment.is_deleted == False,  # noqa: E712
+        {
+            "$or": [
+                {"whatsapp_send_started_at": {"$lt": cutoff}},
+                {"whatsapp_send_started_at": None, "updated_at": {"$lt": cutoff}},
+            ]
+        },
     ).to_list()
-    for appointment in [*retryable_failed, *stuck_sending]:
-        # $set-only update (not .save()) — never overwrite fields another concurrent sweep
-        # (e.g. google_calendar_push_task) may be mid-write on this same row. See
-        # whatsapp_notification_service.py's module docstring for the race this avoids.
-        await appointment.update(Set({Appointment.whatsapp_notification_status: WhatsAppNotificationStatus.pending}))
-        logger.info("whatsapp_notification_unstuck", appointment_id=str(appointment.id))
-    return len(retryable_failed) + len(stuck_sending)
+
+    reset = 0
+    for appointment in retryable_failed:
+        reset += await _reset_to_pending(
+            appointment, Appointment.whatsapp_notification_status == WhatsAppNotificationStatus.failed
+        )
+    for appointment in stuck_sending:
+        reset += await _reset_to_pending(
+            appointment,
+            Appointment.whatsapp_notification_status == WhatsAppNotificationStatus.sending,
+            Appointment.whatsapp_send_started_at == appointment.whatsapp_send_started_at,
+        )
+    return reset
+
+
+async def _reset_to_pending(appointment: Appointment, *still_in_state) -> int:
+    """Conditional $set: only resets the row if it is STILL in the state this sweep read it in, so a
+    send that finished (or was re-claimed) after the read is never knocked back to pending.
+    """
+    result = await Appointment.find_one(Appointment.id == appointment.id, *still_in_state).update(
+        Set({Appointment.whatsapp_notification_status: WhatsAppNotificationStatus.pending})
+    )
+    if result.modified_count == 0:
+        return 0
+    logger.info("whatsapp_notification_unstuck", appointment_id=str(appointment.id))
+    return 1
 
 
 async def _reconcile_whatsapp_notifications() -> int:

@@ -35,7 +35,8 @@ other concurrent writer owns.
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from beanie.operators import Set
+from beanie import UpdateResponse
+from beanie.operators import Inc, Set
 
 from app.core.config import settings
 from app.core.constants import WhatsAppNotificationStatus, WhatsAppNotificationType
@@ -91,33 +92,45 @@ class WhatsAppNotificationService:
     # --- Outbound: app -> WhatsApp (called only by whatsapp_push_task's sweep) ---
 
     async def process_pending_appointment(self, appointment: Appointment) -> None:
-        if appointment.whatsapp_message_id is not None:
-            # Already sent on an earlier tick (e.g. this row was re-queued) — don't double-send.
-            await appointment.update(Set({Appointment.whatsapp_notification_status: WhatsAppNotificationStatus.sent}))
+        # Atomic pending -> sending claim: stamps whatsapp_send_started_at and $inc's the attempt
+        # count in the same write. None means the row is no longer pending (an overlapping sweep
+        # tick already claimed it, or it was sent since the sweep read it), so a stale snapshot
+        # can never trigger a second send. Rows that already carry a message id are excluded —
+        # see the already-sent branch just below.
+        claimed = await Appointment.find_one(
+            Appointment.id == appointment.id,
+            Appointment.whatsapp_notification_status == WhatsAppNotificationStatus.pending,
+            Appointment.whatsapp_message_id == None,  # noqa: E711
+        ).update(
+            Set(
+                {
+                    Appointment.whatsapp_notification_status: WhatsAppNotificationStatus.sending,
+                    Appointment.whatsapp_send_started_at: utcnow(),
+                }
+            ),
+            Inc({Appointment.whatsapp_notification_attempt_count: 1}),
+            response_type=UpdateResponse.NEW_DOCUMENT,
+        )
+        if claimed is None:
+            # Still pending but already has a message id: it was sent on an earlier claim and then
+            # re-queued — mark it sent rather than double-send (same guard as before).
+            await Appointment.find_one(
+                Appointment.id == appointment.id,
+                Appointment.whatsapp_notification_status == WhatsAppNotificationStatus.pending,
+                Appointment.whatsapp_message_id != None,  # noqa: E711
+            ).update(Set({Appointment.whatsapp_notification_status: WhatsAppNotificationStatus.sent}))
             return
 
         try:
-            person = await person_repository.get_by_id(appointment.person_id)
+            person = await person_repository.get_by_id(claimed.person_id)
             if person is None:
                 raise WhatsAppIntegrationError(
-                    f"Person {appointment.person_id} not found for WhatsApp notification"
+                    f"Person {claimed.person_id} not found for WhatsApp notification"
                 )
 
-            template_name = _TEMPLATE_NAMES[appointment.whatsapp_notification_type]
+            template_name = _TEMPLATE_NAMES[claimed.whatsapp_notification_type]
             timezone = await self._resolve_timezone()
-            formatted_datetime = self._format_datetime(
-                ensure_utc(appointment.appointment_datetime), timezone
-            )
-
-            await appointment.update(
-                Set(
-                    {
-                        Appointment.whatsapp_notification_attempt_count: appointment.whatsapp_notification_attempt_count
-                        + 1,
-                        Appointment.whatsapp_notification_status: WhatsAppNotificationStatus.sending,
-                    }
-                )
-            )
+            formatted_datetime = self._format_datetime(ensure_utc(claimed.appointment_datetime), timezone)
 
             result = await whatsapp_client.send_template_message(
                 to=self._format_phone(person.phone_number),
@@ -126,31 +139,44 @@ class WhatsAppNotificationService:
                 body_parameters=[person.full_name or person.phone_number, formatted_datetime],
             )
 
-            await appointment.update(
-                Set(
-                    {
-                        Appointment.whatsapp_message_id: result.message_id,
-                        Appointment.whatsapp_notification_status: WhatsAppNotificationStatus.sent,
-                        Appointment.whatsapp_notification_error: None,
-                        Appointment.whatsapp_notification_last_event_at: utcnow(),
-                    }
-                )
+            await self._finish_claim(
+                claimed,
+                {
+                    Appointment.whatsapp_message_id: result.message_id,
+                    Appointment.whatsapp_notification_status: WhatsAppNotificationStatus.sent,
+                    Appointment.whatsapp_notification_error: None,
+                    Appointment.whatsapp_notification_last_event_at: utcnow(),
+                },
             )
             logger.info(
                 "whatsapp_notification_sent",
-                appointment_id=str(appointment.id),
+                appointment_id=str(claimed.id),
                 message_id=result.message_id,
             )
         except WhatsAppIntegrationError as exc:
-            await appointment.update(
-                Set(
-                    {
-                        Appointment.whatsapp_notification_status: WhatsAppNotificationStatus.failed,
-                        Appointment.whatsapp_notification_error: str(exc),
-                    }
-                )
+            await self._finish_claim(
+                claimed,
+                {
+                    Appointment.whatsapp_notification_status: WhatsAppNotificationStatus.failed,
+                    Appointment.whatsapp_notification_error: str(exc),
+                },
             )
-            logger.error("whatsapp_notification_failed", appointment_id=str(appointment.id), error=str(exc))
+            logger.error("whatsapp_notification_failed", appointment_id=str(claimed.id), error=str(exc))
+
+    async def _finish_claim(self, claimed: Appointment, updates: dict) -> None:
+        """Applies a send's result ONLY if the row is still in the exact claim this send made. If
+        appointment_service re-queued the row while the send was in flight (e.g. the admin
+        cancelled while the "booked" confirmation was still going out), the newer pending
+        notification wins and the next sweep tick sends it — instead of this result overwriting
+        it as "sent" and the patient never hearing about the cancellation.
+        """
+        result = await Appointment.find_one(
+            Appointment.id == claimed.id,
+            Appointment.whatsapp_notification_status == WhatsAppNotificationStatus.sending,
+            Appointment.whatsapp_send_started_at == claimed.whatsapp_send_started_at,
+        ).update(Set(updates))
+        if result.modified_count == 0:
+            logger.info("whatsapp_notification_result_superseded", appointment_id=str(claimed.id))
 
     # --- Inbound (status only): Meta's status webhook -> app ---
 

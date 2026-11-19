@@ -145,10 +145,33 @@ class GoogleCalendarClient:
             # instead, for the doctor's own reading only.
             params={"sendUpdates": "none"},
             retryable=False,
+            ignore_statuses={409} if event.id else None,
         )
+        if response.status_code == 409:
+            # "The requested identifier already exists": an earlier create for this same
+            # appointment (the event id IS the appointment id) actually landed on Google's side,
+            # but we never recorded it — e.g. its response timed out. Adopt that event instead of
+            # failing, which used to loop forever (fail -> reset -> 409 -> fail ...) and leave the
+            # event undeletable on cancel because its id was never stored.
+            return await self._adopt_existing_event(event.id)
         result = GoogleCalendarEvent.model_validate(response.json())
         logger.info("google_calendar_create_event_response", event_id=result.id)
         return result
+
+    async def _adopt_existing_event(self, event_id: str) -> GoogleCalendarEvent:
+        response = await self._request(
+            "GET", f"/calendars/{settings.google_calendar_id}/events/{event_id}", retryable=True
+        )
+        existing = GoogleCalendarEvent.model_validate(response.json())
+        if existing.status == "cancelled":
+            # Google keeps deleted events' ids reserved; one with this id was deleted, so it can't
+            # simply be adopted as this appointment's live event. Surfaced as a normal push
+            # failure (same as before this fix) rather than silently marked synced.
+            raise GoogleCalendarIntegrationError(
+                f"Google Calendar event {event_id} already exists but is cancelled"
+            )
+        logger.warning("google_calendar_create_event_adopted_existing", event_id=existing.id)
+        return existing
 
     async def delete_event(self, event_id: str) -> None:
         # retryable=True — deleting an already-deleted event is a safe, non-destructive no-op
